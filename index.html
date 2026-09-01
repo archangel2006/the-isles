@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>The Isle — Floating Dioramas</title>
+<title>The Isles — Floating Dioramas</title>
 <meta name="description" content="A growing archipelago of tiny interactive floating worlds.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
@@ -176,6 +176,40 @@
     color: var(--muted); text-shadow: 0 1px 4px rgba(255,255,255,0.6);
   }
 
+  .hud-controls {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    pointer-events: auto;
+  }
+  #music-btn {
+    background: rgba(255, 255, 255, 0.42);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.55);
+    padding: 6px 14px;
+    border-radius: 100px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--ink);
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: all 0.25s ease;
+  }
+  #music-btn:hover {
+    background: rgba(255, 255, 255, 0.75);
+    transform: translateY(-1px);
+  }
+  #music-btn.muted {
+    opacity: 0.65;
+    text-decoration: line-through;
+  }
+
   #diorama-overlay {
     position: fixed; inset: 0; z-index: 100; background: #000;
     display: none; flex-direction: column;
@@ -248,7 +282,7 @@
 <div id="hud">
   <div class="hud-top">
     <div class="hud-eyebrow">A Collection of Worlds</div>
-    <h1 class="hud-title">The <em>Isle</em></h1>
+    <h1 class="hud-title">The <em>Isles</em></h1>
     <p class="hud-sub">A growing archipelago of tiny interactive worlds.</p>
   </div>
   <div class="hud-bottom">
@@ -257,7 +291,17 @@
       <span>Click &middot; Enter</span>
       <span>Scroll &middot; Zoom</span>
     </div>
-    <div id="island-count">8 Islands</div>
+    <div class="hud-controls">
+      <button id="music-btn" aria-label="Toggle background music">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 18V5l12-2v13"></path>
+          <circle cx="6" cy="18" r="3"></circle>
+          <circle cx="18" cy="16" r="3"></circle>
+        </svg>
+        <span id="music-status">Music</span>
+      </button>
+      <div id="island-count">8 Islands</div>
+    </div>
   </div>
 </div>
 
@@ -268,13 +312,13 @@
     <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
       <path d="M9 2L4 7l5 5"/>
     </svg>
-    Back to The Isle
+    Back to The Isles
   </button>
   <iframe id="diorama-frame" src="" title="Diorama"></iframe>
 </div>
 
 <div id="veil">
-  <div class="veil-title">The Isle</div>
+  <div class="veil-title">The Isles</div>
   <div class="veil-dots">
     <div class="veil-dot"></div>
     <div class="veil-dot"></div>
@@ -726,7 +770,7 @@ centralAnchor.innerHTML = `
     <polygon points="12 2 15 9 22 12 15 15 12 22 9 15 2 12 9 9"/>
     <circle cx="12" cy="12" r="2.5" fill="currentColor"/>
   </svg>
-  <div class="anchor-title">The Isle</div>
+  <div class="anchor-title">The Isles</div>
   <div class="anchor-sub">Realm Core</div>
 `;
 centralAnchor.addEventListener('mouseenter', () => showHint("the Central Realm Anchor (Click to Recenter)"));
@@ -804,6 +848,93 @@ function mainLoop(ts) {
   drawBg(panX, panY);
 }
 requestAnimationFrame(mainLoop);
+
+// ═══════════════════════════════════════════════════════
+// BACKGROUND MUSIC PLAYLIST (music1 @ 0.5x -> music2 @ 1.0x -> Loop)
+// ═══════════════════════════════════════════════════════
+const PLAYLIST = [
+  { src: 'music1.mp3', rate: 0.5, title: 'Music 1' },
+  { src: 'music2.mp3', rate: 1.0, title: 'Music 2' }
+];
+
+let currentTrack = 0;
+let isAudioActive = true;
+let hasUserInteracted = false;
+
+const bgAudio = new Audio();
+bgAudio.preload = 'auto';
+
+function playCurrentTrack() {
+  const track = PLAYLIST[currentTrack];
+  bgAudio.src = track.src;
+  bgAudio.playbackRate = track.rate;
+  bgAudio.volume = isAudioActive ? 0.65 : 0;
+  
+  if (isAudioActive) {
+    const p = bgAudio.play();
+    if (p !== undefined) {
+      p.catch(() => {
+        // Browser prevented autoplay before interaction
+      });
+    }
+  }
+  updateMusicUI();
+}
+
+// When track finishes, switch to next track and set its speed
+bgAudio.addEventListener('ended', () => {
+  currentTrack = (currentTrack + 1) % PLAYLIST.length;
+  playCurrentTrack();
+});
+
+// Auto-start on first user interaction anywhere
+function startAudioOnFirstAction() {
+  if (!hasUserInteracted) {
+    hasUserInteracted = true;
+    currentTrack = 0; // Starts with music1 at 0.5x
+    playCurrentTrack();
+  }
+}
+
+['click', 'touchstart', 'mousedown', 'keydown', 'wheel'].forEach(evt => {
+  window.addEventListener(evt, startAudioOnFirstAction, { once: true, passive: true });
+});
+
+// Music UI Button
+const musicBtn = document.getElementById('music-btn');
+const musicStatus = document.getElementById('music-status');
+
+function updateMusicUI() {
+  if (!musicBtn || !musicStatus) return;
+  if (!isAudioActive || bgAudio.paused) {
+    musicBtn.classList.add('muted');
+    musicStatus.textContent = 'Muted';
+  } else {
+    musicBtn.classList.remove('muted');
+    musicStatus.textContent = 'Music';
+  }
+}
+
+if (musicBtn) {
+  musicBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    hasUserInteracted = true;
+    if (isAudioActive && !bgAudio.paused) {
+      isAudioActive = false;
+      bgAudio.pause();
+    } else {
+      isAudioActive = true;
+      if (!bgAudio.src || bgAudio.ended) {
+        playCurrentTrack();
+      } else {
+        bgAudio.volume = 0.65;
+        bgAudio.playbackRate = PLAYLIST[currentTrack].rate;
+        bgAudio.play().catch(() => {});
+      }
+    }
+    updateMusicUI();
+  });
+}
 </script>
 </body>
 </html>
