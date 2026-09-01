@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Polar Caps — A Floating Diorama</title>
+<style>
+  :root {
+    --bg: #f0ddc5;
+    --ink: #2c1e14;
+    --muted: #9a8267;
+    --accent: #3f7ea8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Georgia', 'Times New Roman', serif;
+    overflow: hidden;
+    height: 100%; width: 100%;
+  }
+  #canvas-wrap {
+    position: fixed; inset: 0;
+    z-index: 1;
+    cursor: grab;
+  }
+  #canvas-wrap.grabbing { cursor: grabbing; }
+  canvas { display: block; }
+
+  #hud {
+    position: fixed; inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    padding: 5vh 6vw;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .eyebrow {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    color: #c1552f;
+    margin-bottom: 14px;
+    font-weight: 700;
+  }
+  h1 {
+    font-size: clamp(2.2rem, 5.5vw, 3.8rem);
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .top p {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14.5px;
+    color: var(--muted);
+    max-width: 36ch;
+    margin-top: 14px;
+    line-height: 1.6;
+  }
+  .bottom {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+  .legend {
+    display: flex;
+    gap: 26px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #fish-counter {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    color: var(--ink);
+    background: rgba(255,255,255,0.5);
+    backdrop-filter: blur(10px);
+    padding: 10px 18px;
+    border-radius: 100px;
+    pointer-events: auto;
+  }
+  #toast {
+    position: fixed;
+    bottom: 13vh; left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-style: italic;
+    font-size: 15px;
+    color: var(--ink);
+    background: rgba(255,255,255,0.6);
+    backdrop-filter: blur(10px);
+    padding: 10px 22px;
+    border-radius: 100px;
+    opacity: 0;
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    z-index: 6;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #loading {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--muted);
+    transition: opacity 0.8s;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">Forming Ice</div>
+<div id="canvas-wrap"></div>
+
+<div id="hud">
+  <div class="top">
+    <div class="eyebrow">A Floating Diorama</div>
+    <h1>Polar Caps</h1>
+    <p>One small glacier, unmoored. Drag to orbit, scroll to lean in, click the ice to drop a fish for the bear.</p>
+  </div>
+  <div class="bottom">
+    <div class="legend">
+      <div>Drag · Orbit</div>
+      <div>Scroll · Zoom</div>
+      <div>Click Ice · Feed</div>
+    </div>
+    <div id="fish-counter">Fish fed: <span id="fish-count">0</span></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+// ================= PALETTE =================
+const PALETTE = {
+  iceTop: 0xe8f4fa,
+  iceTopShadow: 0xc7e3ef,
+  iceRock: 0x6f92ab,
+  iceRockDark: 0x4d6d85,
+  snow: 0xffffff,
+  bearFur: 0xfbf9f3,
+  bearFurShade: 0xe4ddce,
+  bearNose: 0x2c241d,
+  penguinBody: 0x232a34,
+  penguinBelly: 0xffffff,
+  penguinBeak: 0xe8a23c,
+  sealBody: 0x9aa8ad,
+  sealBelly: 0xdfe6e8,
+  water: 0x2f6f92,
+  bg: 0xf0ddc5,
+};
+
+// ================= SCENE / CAMERA / RENDERER =================
+const wrap = document.getElementById('canvas-wrap');
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+let camDist = 11, camTheta = 0.55, camPhi = 1.2;
+function updateCamera() {
+  camera.position.set(
+    camDist * Math.sin(camPhi) * Math.sin(camTheta),
+    camDist * Math.cos(camPhi) + 0.5,
+    camDist * Math.sin(camPhi) * Math.cos(camTheta)
+  );
+  camera.lookAt(0, 0.6, 0);
+}
+updateCamera();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(PALETTE.bg, 1);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+wrap.appendChild(renderer.domElement);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ================= LIGHTS =================
+const ambient = new THREE.HemisphereLight(0xeaf6ff, 0xcbb8a0, 0.5);
+scene.add(ambient);
+const key = new THREE.DirectionalLight(0xfff3e0, 1.3);
+key.position.set(5, 9, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+key.shadow.camera.left = -6; key.shadow.camera.right = 6;
+key.shadow.camera.top = 6; key.shadow.camera.bottom = -6;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x9fd4ff, 0.55);
+rim.position.set(-6, 3, -6);
+scene.add(rim);
+
+// ================= HELPERS: faceted low-poly builder =================
+function facetMat(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color, flatShading: true, roughness: opts.roughness ?? 0.7, metalness: opts.metalness ?? 0.02,
+  });
+}
+function mesh(geo, mat, castShadow = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = castShadow; m.receiveShadow = true;
+  return m;
+}
+
+// ================= FLOATING ICE ISLAND =================
+const island = new THREE.Group();
+scene.add(island);
+
+// top ice slab — octagonal prism like Aetheris' island silhouette
+const topShape = new THREE.CylinderGeometry(3.3, 3.5, 0.55, 8, 1);
+const topMat = facetMat(PALETTE.iceTop, { roughness: 0.3 });
+const topSlab = mesh(topShape, topMat);
+topSlab.position.y = 0.2;
+island.add(topSlab);
+
+// under-rock (icy blue-grey) tapering to a point, like Aetheris' dirt cone
+const rockShape = new THREE.ConeGeometry(3.3, 4.2, 8, 1);
+const rockMat = facetMat(PALETTE.iceRockDark, { roughness: 0.8 });
+const rock = mesh(rockShape, rockMat);
+rock.rotation.y = Math.PI / 8;
+rock.position.y = -2.1;
+island.add(rock);
+
+// a mid ring for a "layered ice" look
+const ringShape = new THREE.CylinderGeometry(3.4, 3.3, 0.3, 8, 1);
+const ringMat = facetMat(PALETTE.iceRock, { roughness: 0.5 });
+const ring = mesh(ringShape, ringMat);
+ring.position.y = -0.15;
+island.add(ring);
+
+// snow caps / small drifts on top
+function snowDrift(x, z, s) {
+  // low rounded mound instead of a sharp cone — icosahedron squashed flat
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.snow, { roughness: 0.5 });
+  const d = mesh(g, m);
+  d.scale.set(1, 0.5, 1);
+  d.position.set(x, 0.48 + s * 0.25, z);
+  d.rotation.y = Math.random() * Math.PI;
+  island.add(d);
+}
+snowDrift(-1.4, -1.6, 0.3);
+
+// small frozen pond
+const pondGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.05, 8);
+const pondMat = new THREE.MeshStandardMaterial({ color: PALETTE.water, roughness: 0.15, metalness: 0.3, flatShading: true });
+const pond = mesh(pondGeo, pondMat);
+pond.position.set(-1.6, 0.49, 1.4);
+island.add(pond);
+
+// single ice spire as a landmark — reads as intentional, not clutter
+function iceSpire(x, z, h) {
+  const g = new THREE.CylinderGeometry(0.02, 0.2, h, 6);
+  const m = facetMat(0xd8f0fb, { roughness: 0.2 });
+  const spire = mesh(g, m);
+  spire.position.set(x, 0.5 + h / 2, z);
+  island.add(spire);
+}
+iceSpire(2.1, -1.4, 1.3);
+
+// glow particles trailing down from the point (matches Aetheris' bottom sparkle trail)
+const trailGeo = new THREE.BufferGeometry();
+const TRAIL_N = 40;
+const trailPos = new Float32Array(TRAIL_N * 3);
+for (let i = 0; i < TRAIL_N; i++) {
+  const t = i / TRAIL_N;
+  trailPos[i*3] = (Math.random() - 0.5) * 0.3 * (1 - t);
+  trailPos[i*3+1] = -2.1 - t * 2.2;
+  trailPos[i*3+2] = (Math.random() - 0.5) * 0.3 * (1 - t);
+}
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+const trailMat = new THREE.PointsMaterial({ color: 0xbfe6f7, size: 0.045, transparent: true, opacity: 0.7 });
+const trail = new THREE.Points(trailGeo, trailMat);
+island.add(trail);
+
+// ================= FLOATING ICEBERGS AROUND =================
+function iceberg(x, y, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.iceTop, { roughness: 0.3 });
+  const berg = mesh(g, m);
+  berg.position.set(x, y, z);
+  berg.rotation.set(Math.random(), Math.random(), Math.random());
+  berg.userData = { baseY: y, phase: Math.random() * 10 };
+  scene.add(berg);
+  return berg;
+}
+const bergs = [
+  iceberg(-5.2, 0.3, 1.5, 0.5),
+  iceberg(-5.6, -0.5, -1.0, 0.35),
+  iceberg(5.4, -0.2, 1.0, 0.42),
+  iceberg(5.0, 0.6, -1.8, 0.3),
+  iceberg(0.5, -1.8, -5.5, 0.3),
+];
+
+// ================= FACETED LOW-POLY BEAR (octahedron-built) =================
+function buildBear() {
+  const g = new THREE.Group();
+  // warmer, greyer fur so it reads distinctly against the near-white ice
+  const fur = facetMat(0xf2ecdf, { roughness: 0.6 });
+  const shade = facetMat(0xd8cdb4, { roughness: 0.6 });
+  const noseMat = facetMat(PALETTE.bearNose, { roughness: 0.3 });
+  const eyeMat = facetMat(0x1a1512, { roughness: 0.2 });
+
+  // icosahedron detail-1 = rounder, less spiky facets than a raw octahedron
+  const body = mesh(new THREE.IcosahedronGeometry(0.48, 1), fur);
+  body.scale.set(1.5, 0.85, 1.0);
+  body.position.set(0, 0.38, 0);
+  g.add(body);
+
+  const chest = mesh(new THREE.IcosahedronGeometry(0.27, 1), shade);
+  chest.scale.set(1.1, 0.9, 0.7);
+  chest.position.set(0.3, 0.3, 0);
+  g.add(chest);
+
+  const neck = mesh(new THREE.IcosahedronGeometry(0.22, 1), fur);
+  neck.position.set(0.5, 0.5, 0);
+  g.add(neck);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.25, 1), fur);
+  head.scale.set(1.05, 0.95, 0.95);
+  head.position.set(0.72, 0.57, 0);
+  g.add(head);
+
+  const snout = mesh(new THREE.IcosahedronGeometry(0.12, 1), fur);
+  snout.scale.set(1.4, 0.85, 0.85);
+  snout.position.set(0.94, 0.5, 0);
+  g.add(snout);
+
+  const nose = mesh(new THREE.IcosahedronGeometry(0.04, 0), noseMat);
+  nose.position.set(1.06, 0.5, 0);
+  g.add(nose);
+
+  // eyes — small dark spheres just above the snout, either side
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.028, 8, 8), eyeMat, false);
+    eye.position.set(0.86, 0.58, s * 0.11);
+    g.add(eye);
+  });
+
+  [-1, 1].forEach(s => {
+    const ear = mesh(new THREE.IcosahedronGeometry(0.07, 0), shade);
+    ear.position.set(0.64, 0.76, s * 0.17);
+    g.add(ear);
+  });
+
+  const legMat = fur;
+  const legPositions = [[0.3, 0.18], [0.3, -0.18], [-0.24, 0.17], [-0.24, -0.17]];
+  legPositions.forEach(([lx, lz]) => {
+    const leg = mesh(new THREE.IcosahedronGeometry(0.15, 1), legMat);
+    leg.scale.set(0.8, 1.3, 0.8);
+    leg.position.set(lx, 0.1, lz);
+    g.add(leg);
+  });
+
+  const tail = mesh(new THREE.IcosahedronGeometry(0.08, 0), shade);
+  tail.position.set(-0.6, 0.4, 0);
+  g.add(tail);
+
+  g.userData.head = head;
+  g.userData.body = body;
+  return g;
+}
+const bear = buildBear();
+bear.scale.setScalar(0.85); // scaled back down — 1.35 was too large for the island
+bear.position.set(0.3, 0.55, 1.3); // moved forward/center so it's front-and-center on the island
+bear.userData.state = 'idle';
+bear.userData.target = null;
+bear.userData.homeAngle = Math.random() * Math.PI * 2;
+scene.add(bear);
+
+// ================= FACETED PENGUIN =================
+function buildPenguin() {
+  const g = new THREE.Group();
+  const bodyMat = facetMat(PALETTE.penguinBody, { roughness: 0.6 });
+  const bellyMat = facetMat(PALETTE.penguinBelly, { roughness: 0.6 });
+  const beakMat = facetMat(PALETTE.penguinBeak, { roughness: 0.4 });
+  const eyeMat = facetMat(0xffffff, { roughness: 0.2 });
+  const pupilMat = facetMat(0x141414, { roughness: 0.1 });
+
+  const body = mesh(new THREE.IcosahedronGeometry(0.12, 1), bodyMat);
+  body.scale.set(0.85, 1.4, 0.85);
+  body.position.y = 0.15;
+  g.add(body);
+
+  const belly = mesh(new THREE.IcosahedronGeometry(0.08, 1), bellyMat);
+  belly.scale.set(0.85, 1.3, 0.6);
+  belly.position.set(0, 0.14, 0.05);
+  g.add(belly);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.075, 1), bodyMat);
+  head.position.y = 0.32;
+  g.add(head);
+
+  const beak = mesh(new THREE.IcosahedronGeometry(0.028, 0), beakMat);
+  beak.scale.set(1.3, 0.8, 1.5);
+  beak.position.set(0, 0.31, 0.08);
+  g.add(beak);
+
+  // eyes — tiny white base + dark pupil so they read even at small scale
+  [-1, 1].forEach(s => {
+    const eyeWhite = mesh(new THREE.SphereGeometry(0.02, 8, 8), eyeMat, false);
+    eyeWhite.position.set(s * 0.045, 0.35, 0.06);
+    g.add(eyeWhite);
+    const pupil = mesh(new THREE.SphereGeometry(0.011, 6, 6), pupilMat, false);
+    pupil.position.set(s * 0.045, 0.35, 0.075);
+    g.add(pupil);
+  });
+
+  [-1, 1].forEach(s => {
+    const wing = mesh(new THREE.IcosahedronGeometry(0.05, 0), bodyMat);
+    wing.scale.set(0.5, 1.6, 0.7);
+    wing.position.set(s * 0.12, 0.15, 0);
+    g.add(wing);
+  });
+
+  return g;
+}
+const penguins = [];
+for (let i = 0; i < 6; i++) {
+  const p = buildPenguin();
+  const ang = Math.random() * Math.PI * 2;
+  const rad = 1.1 + Math.random() * 1.9;
+  p.position.set(Math.cos(ang) * rad, 0.5, Math.sin(ang) * rad);
+  p.rotation.y = Math.random() * Math.PI * 2;
+  p.userData = { angle: ang, radius: rad, speed: 0.12 + Math.random() * 0.15, bob: Math.random() * 10 };
+  scene.add(p);
+  penguins.push(p);
+}
+
+// ================= FACETED SEAL (on an iceberg) =================
+function buildSeal() {
+  const g = new THREE.Group();
+  const bodyMat = facetMat(PALETTE.sealBody, { roughness: 0.5 });
+  const bellyMat = facetMat(PALETTE.sealBelly, { roughness: 0.5 });
+  const eyeMat = facetMat(0x141414, { roughness: 0.1 });
+
+  const body = mesh(new THREE.IcosahedronGeometry(0.24, 1), bodyMat);
+  body.scale.set(1.9, 0.65, 0.9);
+  body.position.y = 0.14;
+  g.add(body);
+
+  const belly = mesh(new THREE.IcosahedronGeometry(0.16, 1), bellyMat);
+  belly.scale.set(1.6, 0.5, 0.6);
+  belly.position.set(0, 0.10, 0.08);
+  g.add(belly);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.12, 1), bodyMat);
+  head.scale.set(1.1, 0.85, 0.85);
+  head.position.set(0.42, 0.18, 0);
+  g.add(head);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.024, 8, 8), eyeMat, false);
+    eye.position.set(0.5, 0.2, s * 0.09);
+    g.add(eye);
+  });
+
+  const tail = mesh(new THREE.IcosahedronGeometry(0.1, 0), bodyMat);
+  tail.scale.set(1.3, 0.5, 0.6);
+  tail.position.set(-0.44, 0.12, 0);
+  g.add(tail);
+
+  return g;
+}
+const seal = buildSeal();
+seal.position.set(-5.2, 0.62, 1.5);
+seal.rotation.y = 0.4;
+scene.add(seal);
+
+// ================= FISH =================
+const fishGroup = new THREE.Group();
+scene.add(fishGroup);
+const fishMat = facetMat(0x4f9fd6, { roughness: 0.35, metalness: 0.1 });
+function dropFish(x, z) {
+  const f = mesh(new THREE.OctahedronGeometry(0.09, 0), fishMat);
+  f.scale.set(1.6, 0.7, 0.8);
+  f.position.set(x, 0.56, z);
+  fishGroup.add(f);
+  if (!bear.userData.target) {
+    bear.userData.state = 'walking';
+    bear.userData.target = f;
+  }
+}
+
+// ================= SNOW =================
+const SNOW_COUNT = 260;
+const snowGeo = new THREE.BufferGeometry();
+const snowPos = new Float32Array(SNOW_COUNT * 3);
+const snowSpeed = new Float32Array(SNOW_COUNT);
+for (let i = 0; i < SNOW_COUNT; i++) {
+  snowPos[i*3] = (Math.random() - 0.5) * 14;
+  snowPos[i*3+1] = Math.random() * 8 - 1;
+  snowPos[i*3+2] = (Math.random() - 0.5) * 14;
+  snowSpeed[i] = 0.003 + Math.random() * 0.006;
+}
+snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
+const snowMat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.04, transparent: true, opacity: 0.8 });
+const snow = new THREE.Points(snowGeo, snowMat);
+scene.add(snow);
+
+// ================= INTERACTION =================
+let isDragging = false, lastX = 0, lastY = 0, dragged = false;
+wrap.addEventListener('mousedown', (e) => {
+  isDragging = true; dragged = false; lastX = e.clientX; lastY = e.clientY;
+  wrap.classList.add('grabbing');
+});
+window.addEventListener('mouseup', () => { isDragging = false; wrap.classList.remove('grabbing'); });
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
+  camTheta -= dx * 0.005;
+  camPhi = Math.min(1.5, Math.max(0.55, camPhi - dy * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+  updateCamera();
+});
+wrap.addEventListener('wheel', (e) => {
+  camDist = Math.min(16, Math.max(5.5, camDist + e.deltaY * 0.005));
+  updateCamera();
+}, { passive: true });
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+wrap.addEventListener('click', (e) => {
+  if (dragged) return;
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObject(topSlab);
+  if (hits.length) {
+    const p = hits[0].point;
+    dropFish(p.x, p.z);
+    showToast('A fish, dropped on the ice.');
+  }
+});
+
+let toastTimeout;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => el.classList.remove('show'), 2600);
+}
+let fedCount = 0;
+function incrementFed() {
+  fedCount++;
+  document.getElementById('fish-count').textContent = fedCount;
+}
+
+// ================= LOOP =================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.getElapsedTime();
+
+  island.rotation.y = Math.sin(t * 0.08) * 0.02;
+  island.position.y = Math.sin(t * 0.35) * 0.08;
+
+  bergs.forEach(b => {
+    b.position.y = b.userData.baseY + Math.sin(t * 0.6 + b.userData.phase) * 0.15;
+    b.rotation.y += dt * 0.05;
+  });
+
+  seal.position.y = island.position.y + 0.62 + Math.sin(t * 0.6 + 2) * 0.15;
+
+  const sp = snowGeo.attributes.position.array;
+  for (let i = 0; i < SNOW_COUNT; i++) {
+    sp[i*3+1] -= snowSpeed[i];
+    if (sp[i*3+1] < -2) sp[i*3+1] = 6;
+  }
+  snowGeo.attributes.position.needsUpdate = true;
+
+  penguins.forEach(p => {
+    p.userData.angle += dt * p.userData.speed * 0.3;
+    p.position.x = Math.cos(p.userData.angle) * p.userData.radius;
+    p.position.z = Math.sin(p.userData.angle) * p.userData.radius;
+    p.position.y = island.position.y + 0.5 + Math.abs(Math.sin(t * 5 + p.userData.bob)) * 0.03;
+    p.rotation.y = -p.userData.angle + Math.PI / 2;
+  });
+
+  const bd = bear.userData;
+  if (bd.state === 'idle') {
+    bear.position.x += Math.sin(t * 0.3 + bd.homeAngle) * 0.0012;
+    bear.position.z += Math.cos(t * 0.3 + bd.homeAngle) * 0.0012;
+    bear.rotation.y = Math.sin(t * 0.2) * 0.25;
+  } else if (bd.state === 'walking' && bd.target) {
+    const tp = bd.target.position;
+    const dir = new THREE.Vector3(tp.x - bear.position.x, 0, tp.z - bear.position.z);
+    const dist = dir.length();
+    if (dist < 0.2) {
+      bd.state = 'eating'; bd.eatT = 0;
+    } else {
+      dir.normalize();
+      bear.position.x += dir.x * dt * 0.9;
+      bear.position.z += dir.z * dt * 0.9;
+      bear.rotation.y = Math.atan2(dir.x, dir.z);
+    }
+  } else if (bd.state === 'eating') {
+    bd.eatT += dt;
+    bear.userData.head.rotation.x = Math.sin(t * 12) * 0.2;
+    if (bd.eatT > 0.8) {
+      fishGroup.remove(bd.target);
+      incrementFed();
+      showToast('The bear is fed. It is happy.');
+      bd.target = null;
+      bd.state = 'happy'; bd.happyT = 0;
+    }
+  } else if (bd.state === 'happy') {
+    bd.happyT += dt;
+    bear.position.y = 0.55 + island.position.y + Math.abs(Math.sin(t * 6)) * 0.1;
+    if (bd.happyT > 1.0) {
+      bear.position.y = 0.55 + island.position.y;
+      bear.userData.head.rotation.x = 0;
+      if (fishGroup.children.length > 0) {
+        bd.target = fishGroup.children[0];
+        bd.state = 'walking';
+      } else {
+        bd.state = 'idle';
+      }
+    }
+  }
+  if (bd.state !== 'happy') bear.position.y = 0.55 + island.position.y;
+
+  updateCamera();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    const l = document.getElementById('loading');
+    l.style.opacity = '0';
+    setTimeout(() => l.style.display = 'none', 800);
+  }, 500);
+});
+</script>
+
+</body>
+</html>

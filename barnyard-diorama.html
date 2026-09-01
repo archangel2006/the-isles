@@ -1,0 +1,789 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Barnyard — A Floating Diorama</title>
+<style>
+  :root {
+    --bg: #eef2df;
+    --ink: #2a2e1e;
+    --muted: #7a8368;
+    --accent: #b8402f;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Georgia', 'Times New Roman', serif;
+    overflow: hidden;
+    height: 100%; width: 100%;
+  }
+  #canvas-wrap { position: fixed; inset: 0; z-index: 1; cursor: grab; }
+  #canvas-wrap.grabbing { cursor: grabbing; }
+  canvas { display: block; }
+
+  #hud {
+    position: fixed; inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    padding: 5vh 6vw;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .eyebrow {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+    font-weight: 700;
+  }
+  h1 {
+    font-size: clamp(2.2rem, 5.5vw, 3.8rem);
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .top p {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14.5px;
+    color: var(--muted);
+    max-width: 36ch;
+    margin-top: 14px;
+    line-height: 1.6;
+  }
+  .bottom { display: flex; align-items: flex-end; justify-content: space-between; }
+  .legend {
+    display: flex;
+    gap: 26px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #feed-counter {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    color: var(--ink);
+    background: rgba(255,255,255,0.55);
+    backdrop-filter: blur(10px);
+    padding: 10px 18px;
+    border-radius: 100px;
+    pointer-events: auto;
+  }
+  #toast {
+    position: fixed;
+    bottom: 13vh; left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-style: italic;
+    font-size: 15px;
+    color: var(--ink);
+    background: rgba(255,255,255,0.65);
+    backdrop-filter: blur(10px);
+    padding: 10px 22px;
+    border-radius: 100px;
+    opacity: 0;
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    z-index: 6;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #loading {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--muted);
+    transition: opacity 0.8s;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">Scattering the Feed</div>
+<div id="canvas-wrap"></div>
+
+<div id="hud">
+  <div class="top">
+    <div class="eyebrow">A Floating Diorama</div>
+    <h1>Barnyard</h1>
+    <p>One small farmyard, unmoored. Drag to orbit, scroll to lean in, click the ground to scatter feed for the chickens and pigs.</p>
+  </div>
+  <div class="bottom">
+    <div class="legend">
+      <div>Drag · Orbit</div>
+      <div>Scroll · Zoom</div>
+      <div>Click Ground · Feed Chickens</div>
+      <div>Click Trough · Feed Pigs</div>
+    </div>
+    <div id="feed-counter">Fed: <span id="feed-count">0</span></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+// ================= PALETTE =================
+const PALETTE = {
+  grassTop: 0x9fbf6f,
+  grassShade: 0x7fa055,
+  dirt: 0xb89a6a,
+  dirtDark: 0x8a6e48,
+  rock: 0x8a7658,
+  rockDark: 0x63533b,
+  barnRed: 0xb8402f,
+  barnRedDark: 0x8f2e21,
+  barnRoof: 0x4a3a2c,
+  barnTrim: 0xf2ead8,
+  fence: 0xc9b088,
+  chickenWhite: 0xf5ede0,
+  chickenBrown: 0xc9915a,
+  comb: 0xd8503f,
+  beak: 0xe8a23c,
+  pigPink: 0xe8a8a0,
+  pigPinkDark: 0xd08a82,
+  bg: 0xeef2df,
+};
+
+// ================= SCENE / CAMERA / RENDERER =================
+const wrap = document.getElementById('canvas-wrap');
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+let camDist = 11, camTheta = 0.5, camPhi = 1.15;
+function updateCamera() {
+  camera.position.set(
+    camDist * Math.sin(camPhi) * Math.sin(camTheta),
+    camDist * Math.cos(camPhi) + 0.5,
+    camDist * Math.sin(camPhi) * Math.cos(camTheta)
+  );
+  camera.lookAt(0, 0.6, 0);
+}
+updateCamera();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(PALETTE.bg, 1);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+wrap.appendChild(renderer.domElement);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ================= LIGHTS =================
+const ambient = new THREE.HemisphereLight(0xf5f8e0, 0x8a9a5c, 0.85);
+scene.add(ambient);
+const key = new THREE.DirectionalLight(0xfff3d0, 1.4);
+key.position.set(5, 8, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+key.shadow.camera.left = -6; key.shadow.camera.right = 6;
+key.shadow.camera.top = 6; key.shadow.camera.bottom = -6;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0xbfe0a0, 0.5);
+rim.position.set(-6, 3, -6);
+scene.add(rim);
+
+// ================= HELPERS =================
+function facetMat(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color, flatShading: true, roughness: opts.roughness ?? 0.7, metalness: opts.metalness ?? 0.02,
+    transparent: opts.transparent ?? false, opacity: opts.opacity ?? 1,
+  });
+}
+function mesh(geo, mat, castShadow = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = castShadow; m.receiveShadow = true;
+  return m;
+}
+
+// ================= FLOATING ISLAND =================
+const island = new THREE.Group();
+scene.add(island);
+
+const topShape = new THREE.CylinderGeometry(3.3, 3.5, 0.5, 8, 1);
+const topMat = facetMat(PALETTE.grassTop, { roughness: 0.8 });
+const topSlab = mesh(topShape, topMat);
+topSlab.position.y = 0.2;
+island.add(topSlab);
+
+const rockShape = new THREE.ConeGeometry(3.3, 4.0, 8, 1);
+const rockMat = facetMat(PALETTE.rockDark, { roughness: 0.85 });
+const rock = mesh(rockShape, rockMat);
+rock.rotation.y = Math.PI / 8;
+rock.position.y = -2.0;
+island.add(rock);
+
+const ringShape = new THREE.CylinderGeometry(3.4, 3.3, 0.28, 8, 1);
+const ringMat = facetMat(PALETTE.rock, { roughness: 0.7 });
+const ring = mesh(ringShape, ringMat);
+ring.position.y = -0.14;
+island.add(ring);
+
+// dirt patch — the main scattering/pecking ground in front of the coop
+const dirtGeo = new THREE.CylinderGeometry(1.1, 1.1, 0.03, 20);
+const dirtMat = facetMat(PALETTE.dirt, { roughness: 0.9 });
+const dirtPatch = mesh(dirtGeo, dirtMat);
+dirtPatch.position.set(0.5, 0.475, 1.3);
+island.add(dirtPatch);
+
+// ================= CHICKEN COOP =================
+const coop = new THREE.Group();
+const coopBodyMat = facetMat(0xe0d4b0, { roughness: 0.75 });
+const coopBody = mesh(new THREE.BoxGeometry(0.55, 0.4, 0.5), coopBodyMat);
+coopBody.position.y = 0.2;
+coop.add(coopBody);
+
+const coopRoofMat = facetMat(PALETTE.barnRed, { roughness: 0.7 });
+const coopRoof = mesh(new THREE.ConeGeometry(0.42, 0.28, 4, 1), coopRoofMat);
+coopRoof.rotation.y = Math.PI / 4;
+coopRoof.scale.set(1, 0.7, 1.3);
+coopRoof.position.y = 0.5;
+coop.add(coopRoof);
+
+// small dark doorway
+const coopDoorMat = facetMat(0x2a2018, { roughness: 0.6 });
+const coopDoor = mesh(new THREE.BoxGeometry(0.16, 0.2, 0.03), coopDoorMat, false);
+coopDoor.position.set(0, 0.12, 0.26);
+coop.add(coopDoor);
+
+// little ramp up to the door
+const rampMat = facetMat(0xc9b088, { roughness: 0.8 });
+const ramp = mesh(new THREE.BoxGeometry(0.16, 0.03, 0.3), rampMat, false);
+ramp.rotation.x = -0.35;
+ramp.position.set(0, 0.02, 0.42);
+coop.add(ramp);
+
+const coopHome = new THREE.Vector3(0.7, 0.47, 0.75); // where chickens consider "home"
+coop.position.set(coopHome.x, coopHome.y, coopHome.z);
+coop.rotation.y = -0.4;
+island.add(coop);
+
+// grass mounds for texture
+function grassMound(x, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.grassShade, { roughness: 0.85 });
+  const d = mesh(g, m);
+  d.scale.set(1, 0.35, 1);
+  d.position.set(x, 0.46 + s * 0.15, z);
+  island.add(d);
+}
+grassMound(-2.4, -1.4, 0.4);
+grassMound(2.5, -1.6, 0.32);
+
+// ================= BARN =================
+const barn = new THREE.Group();
+const barnBodyMat = facetMat(PALETTE.barnRed, { roughness: 0.65 });
+const barnBody = mesh(new THREE.BoxGeometry(1.1, 0.9, 0.9), barnBodyMat);
+barnBody.position.y = 0.45;
+barn.add(barnBody);
+
+const roofMat = facetMat(PALETTE.barnRoof, { roughness: 0.75 });
+const roof = mesh(new THREE.ConeGeometry(0.85, 0.55, 4, 1), roofMat);
+roof.rotation.y = Math.PI / 4;
+roof.scale.set(1, 0.75, 1.35);
+roof.position.y = 1.15;
+barn.add(roof);
+
+const trimMat = facetMat(PALETTE.barnTrim, { roughness: 0.6 });
+const doorFrame = mesh(new THREE.BoxGeometry(0.42, 0.55, 0.06), trimMat, false);
+doorFrame.position.set(0, 0.3, 0.46);
+barn.add(doorFrame);
+const doorMat = facetMat(PALETTE.barnRedDark, { roughness: 0.7 });
+const door = mesh(new THREE.BoxGeometry(0.34, 0.47, 0.03), doorMat, false);
+door.position.set(0, 0.28, 0.49);
+barn.add(door);
+
+// hayloft window — small triangle
+const windowMat = facetMat(PALETTE.barnTrim, { roughness: 0.5 });
+const loftWindow = mesh(new THREE.ConeGeometry(0.12, 0.12, 3), windowMat, false);
+loftWindow.rotation.z = Math.PI;
+loftWindow.position.set(0, 0.85, 0.46);
+barn.add(loftWindow);
+
+barn.position.set(-1.5, 0.5, -1.2);
+barn.rotation.y = 0.5;
+island.add(barn);
+
+// ================= PEN (fence around a grazing patch) =================
+function fencePost(x, z, h) {
+  const m = facetMat(PALETTE.fence, { roughness: 0.75 });
+  const post = mesh(new THREE.CylinderGeometry(0.025, 0.03, h, 5), m);
+  post.position.set(x, 0.46 + h / 2, z);
+  island.add(post);
+  return post;
+}
+function fenceRail(x1, z1, x2, z2, y) {
+  const m = facetMat(PALETTE.fence, { roughness: 0.75 });
+  const len = Math.hypot(x2 - x1, z2 - z1);
+  const rail = mesh(new THREE.CylinderGeometry(0.012, 0.012, len, 4), m, false);
+  rail.position.set((x1 + x2) / 2, y, (z1 + z2) / 2);
+  rail.rotation.z = Math.PI / 2;
+  rail.rotation.y = -Math.atan2(z2 - z1, x2 - x1);
+  island.add(rail);
+}
+// simple square-ish pen on the other side of the island
+const penCorners = [[1.6, -0.6], [2.6, 0.0], [2.2, 1.2], [1.2, 0.7]];
+penCorners.forEach(([x, z]) => fencePost(x, z, 0.4));
+for (let i = 0; i < penCorners.length; i++) {
+  const a = penCorners[i], b = penCorners[(i + 1) % penCorners.length];
+  fenceRail(a[0], a[1], b[0], b[1], 0.56);
+  fenceRail(a[0], a[1], b[0], b[1], 0.72);
+}
+// muddy patch inside the pen for the pigs — enlarged and darkened so it reads clearly
+const mudGeo = new THREE.CylinderGeometry(0.75, 0.75, 0.03, 16);
+const mudMat = facetMat(0x6b5636, { roughness: 0.55 });
+const pigMud = mesh(mudGeo, mudMat);
+const pigMudCenter = new THREE.Vector3(1.9, 0.48, 0.3);
+pigMud.position.copy(pigMudCenter);
+island.add(pigMud);
+// a couple of glossy puddle patches within the mud for extra texture
+function puddle(ox, oz, s) {
+  const g = new THREE.CylinderGeometry(s, s, 0.005, 10);
+  const m = new THREE.MeshStandardMaterial({ color: 0x4a3f28, roughness: 0.15, metalness: 0.2, flatShading: true });
+  const p = mesh(g, m, false);
+  p.position.set(pigMudCenter.x + ox, pigMudCenter.y + 0.006, pigMudCenter.z + oz);
+  island.add(p);
+}
+puddle(0.25, 0.15, 0.18);
+puddle(-0.2, -0.1, 0.14);
+
+// ================= PIG TROUGH (separate food from the chickens') =================
+const trough = new THREE.Group();
+const troughWoodMat = facetMat(0x7a5c38, { roughness: 0.8 });
+const troughBase = mesh(new THREE.BoxGeometry(0.55, 0.14, 0.24), troughWoodMat);
+troughBase.position.y = 0.07;
+trough.add(troughBase);
+const troughInnerMat = facetMat(0x4a3a24, { roughness: 0.7 });
+const troughInner = mesh(new THREE.BoxGeometry(0.45, 0.08, 0.16), troughInnerMat, false);
+troughInner.position.y = 0.1;
+trough.add(troughInner);
+const slopMat = facetMat(0x8a7a4a, { roughness: 0.5 });
+const slop = mesh(new THREE.BoxGeometry(0.4, 0.03, 0.13), slopMat, false);
+slop.position.y = 0.13;
+slop.visible = false;
+trough.add(slop);
+trough.position.set(2.15, 0.47, -0.55);
+trough.rotation.y = 0.3;
+island.add(trough);
+
+const troughHitbox = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 8), new THREE.MeshBasicMaterial({ visible: false }));
+troughHitbox.position.copy(trough.position);
+island.add(troughHitbox);
+
+// sparkle trail off the bottom point
+const trailGeo = new THREE.BufferGeometry();
+const TRAIL_N = 40;
+const trailPos = new Float32Array(TRAIL_N * 3);
+for (let i = 0; i < TRAIL_N; i++) {
+  const tt = i / TRAIL_N;
+  trailPos[i*3] = (Math.random() - 0.5) * 0.3 * (1 - tt);
+  trailPos[i*3+1] = -2.0 - tt * 2.2;
+  trailPos[i*3+2] = (Math.random() - 0.5) * 0.3 * (1 - tt);
+}
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+const trailMat = new THREE.PointsMaterial({ color: 0xd8e8a0, size: 0.045, transparent: true, opacity: 0.6 });
+const trail = new THREE.Points(trailGeo, trailMat);
+island.add(trail);
+
+// ================= FLOATING ROCKS AROUND =================
+function floatRock(x, y, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.rock, { roughness: 0.7 });
+  const r = mesh(g, m);
+  r.position.set(x, y, z);
+  r.rotation.set(Math.random(), Math.random(), Math.random());
+  r.userData = { baseY: y, phase: Math.random() * 10 };
+  scene.add(r);
+  const capMat = facetMat(PALETTE.grassShade, { roughness: 0.85 });
+  const cap = mesh(new THREE.IcosahedronGeometry(s * 0.55, 0), capMat);
+  cap.scale.set(1, 0.5, 1);
+  cap.position.set(x, y + s * 0.55, z);
+  cap.userData = { baseY: y + s * 0.55, phase: r.userData.phase };
+  scene.add(cap);
+  return [r, cap];
+}
+const floatRocks = [
+  ...floatRock(-5.4, 0.2, 1.3, 0.42),
+  ...floatRock(5.5, -0.2, 1.0, 0.38),
+  ...floatRock(0.5, -1.7, -5.5, 0.3),
+];
+
+// ================= CHICKEN (faceted, with comb + eyes) =================
+function buildChicken(colorMode) {
+  const g = new THREE.Group();
+  const bodyColor = colorMode === 'brown' ? PALETTE.chickenBrown : PALETTE.chickenWhite;
+  const bodyMat = facetMat(bodyColor, { roughness: 0.7 });
+  const combMat = facetMat(PALETTE.comb, { roughness: 0.4 });
+  const beakMat = facetMat(PALETTE.beak, { roughness: 0.4 });
+  const eyeMat = facetMat(0x161311, { roughness: 0.15 });
+
+  const body = mesh(new THREE.IcosahedronGeometry(0.13, 1), bodyMat);
+  body.scale.set(1.1, 1.0, 0.95);
+  body.position.y = 0.15;
+  g.add(body);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.08, 1), bodyMat);
+  head.position.set(0.11, 0.27, 0);
+  g.add(head);
+
+  const comb = mesh(new THREE.IcosahedronGeometry(0.03, 0), combMat, false);
+  comb.scale.set(0.6, 1.2, 0.5);
+  comb.position.set(0.11, 0.36, 0);
+  g.add(comb);
+
+  const beak = mesh(new THREE.IcosahedronGeometry(0.025, 0), beakMat, false);
+  beak.scale.set(1.5, 0.8, 0.8);
+  beak.position.set(0.19, 0.25, 0);
+  g.add(beak);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.015, 8, 8), eyeMat, false);
+    eye.position.set(0.15, 0.29, s * 0.055);
+    g.add(eye);
+  });
+
+  const tailMat = facetMat(colorMode === 'brown' ? PALETTE.chickenWhite : PALETTE.chickenBrown, { roughness: 0.7 });
+  const tail = mesh(new THREE.ConeGeometry(0.08, 0.16, 5), tailMat, false);
+  tail.rotation.z = -Math.PI / 3;
+  tail.position.set(-0.13, 0.24, 0);
+  g.add(tail);
+
+  g.userData.head = head;
+  return g;
+}
+const chickens = [];
+const chickenColors = ['white', 'brown', 'white', 'brown', 'white'];
+chickenColors.forEach((c, i) => {
+  const chick = buildChicken(c);
+  const ang = (i / chickenColors.length) * Math.PI * 2;
+  const rad = 0.4 + Math.random() * 0.6;
+  chick.position.set(coopHome.x + Math.cos(ang) * rad, 0.5, coopHome.z + Math.sin(ang) * rad);
+  chick.rotation.y = Math.random() * Math.PI * 2;
+  chick.userData.state = 'idle';
+  chick.userData.homeAngle = ang;
+  chick.userData.homeRadius = rad;
+  chick.userData.target = null;
+  chick.userData.wanderPhase = Math.random() * 10;
+  scene.add(chick);
+  chickens.push(chick);
+});
+
+// ================= PIG (faceted, with eyes + snout) =================
+function buildPig() {
+  const g = new THREE.Group();
+  const bodyMat = facetMat(PALETTE.pigPink, { roughness: 0.6 });
+  const snoutMat = facetMat(PALETTE.pigPinkDark, { roughness: 0.6 });
+  const eyeMat = facetMat(0x161311, { roughness: 0.15 });
+
+  const body = mesh(new THREE.IcosahedronGeometry(0.22, 1), bodyMat);
+  body.scale.set(1.5, 0.85, 1.0);
+  body.position.y = 0.2;
+  g.add(body);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.14, 1), bodyMat);
+  head.position.set(0.28, 0.2, 0);
+  g.add(head);
+
+  const snout = mesh(new THREE.IcosahedronGeometry(0.06, 0), snoutMat, false);
+  snout.scale.set(1, 0.7, 1.1);
+  snout.position.set(0.42, 0.16, 0);
+  g.add(snout);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.02, 8, 8), eyeMat, false);
+    eye.position.set(0.32, 0.26, s * 0.09);
+    g.add(eye);
+  });
+
+  [-1, 1].forEach(s => {
+    const ear = mesh(new THREE.IcosahedronGeometry(0.05, 0), bodyMat, false);
+    ear.scale.set(1, 1.3, 0.4);
+    ear.position.set(0.22, 0.34, s * 0.1);
+    ear.rotation.x = s * 0.3;
+    g.add(ear);
+  });
+
+  const legPositions = [[0.18, 0.14], [0.18, -0.14], [-0.14, 0.13], [-0.14, -0.13]];
+  legPositions.forEach(([lx, lz]) => {
+    const leg = mesh(new THREE.IcosahedronGeometry(0.08, 0), bodyMat, false);
+    leg.scale.set(0.8, 1.2, 0.8);
+    leg.position.set(lx, 0.06, lz);
+    g.add(leg);
+  });
+
+  const tail = mesh(new THREE.TorusGeometry(0.03, 0.008, 6, 8), snoutMat, false);
+  tail.position.set(-0.28, 0.25, 0);
+  g.add(tail);
+
+  g.userData.head = head;
+  return g;
+}
+const pigs = [];
+for (let i = 0; i < 2; i++) {
+  const pig = buildPig();
+  pig.scale.setScalar(0.9);
+  const ang = Math.random() * Math.PI * 2;
+  const rad = 0.15 + Math.random() * 0.35; // stays inside the mud circle (radius 0.75)
+  pig.position.set(pigMudCenter.x + Math.cos(ang) * rad, 0.5, pigMudCenter.z + Math.sin(ang) * rad);
+  pig.rotation.y = Math.random() * Math.PI * 2;
+  pig.userData.state = 'idle';
+  pig.userData.homeAngle = ang;
+  pig.userData.homeRadius = rad;
+  pig.userData.target = null;
+  pig.userData.wanderPhase = Math.random() * 10;
+  scene.add(pig);
+  pigs.push(pig);
+}
+
+// ================= CHICKEN FEED (scattered by clicking the ground) =================
+const feedGroup = new THREE.Group();
+scene.add(feedGroup);
+const feedMat = facetMat(0xe8c23c, { roughness: 0.8 });
+function scatterFeed(x, z) {
+  // scatter a small cluster of feed pieces, not just one
+  const pieces = [];
+  const count = 3 + Math.floor(Math.random() * 2);
+  for (let i = 0; i < count; i++) {
+    const f = mesh(new THREE.IcosahedronGeometry(0.025, 0), feedMat, false);
+    const ox = (Math.random() - 0.5) * 0.25;
+    const oz = (Math.random() - 0.5) * 0.25;
+    f.position.set(x + ox, 0.5, z + oz);
+    feedGroup.add(f);
+    pieces.push(f);
+  }
+  showToast('Feed, scattered for the chickens.');
+
+  // chickens only — pigs eat from their own trough, not scattered ground feed
+  const targetPos = new THREE.Vector3(x, 0.5, z);
+  let nearest = null, nearestDist = Infinity;
+  chickens.forEach(a => {
+    if (a.userData.state === 'idle') {
+      const d = a.position.distanceTo(targetPos);
+      if (d < nearestDist) { nearestDist = d; nearest = a; }
+    }
+  });
+  if (nearest) {
+    nearest.userData.state = 'walking';
+    nearest.userData.target = pieces[0];
+    nearest.userData.feedPieces = pieces;
+  }
+}
+
+// ================= PIG TROUGH FEEDING (separate food, filled by clicking the trough) =================
+function fillTrough() {
+  slop.visible = true;
+  showToast('Slop, poured into the trough.');
+  let nearest = null, nearestDist = Infinity;
+  pigs.forEach(p => {
+    if (p.userData.state === 'idle') {
+      const d = p.position.distanceTo(trough.position);
+      if (d < nearestDist) { nearestDist = d; nearest = p; }
+    }
+  });
+  // if none idle, interrupt whichever pig is closest so a click always does something
+  if (!nearest) {
+    let closest = null, closestDist = Infinity;
+    pigs.forEach(p => {
+      const d = p.position.distanceTo(trough.position);
+      if (d < closestDist) { closestDist = d; closest = p; }
+    });
+    nearest = closest;
+  }
+  if (nearest) {
+    nearest.userData.state = 'walking';
+    nearest.userData.toTrough = true;
+  }
+}
+
+// ================= INTERACTION =================
+let isDragging = false, lastX = 0, lastY = 0, dragged = false;
+wrap.addEventListener('mousedown', (e) => {
+  isDragging = true; dragged = false; lastX = e.clientX; lastY = e.clientY;
+  wrap.classList.add('grabbing');
+});
+window.addEventListener('mouseup', () => { isDragging = false; wrap.classList.remove('grabbing'); });
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
+  camTheta -= dx * 0.005;
+  camPhi = Math.min(1.5, Math.max(0.55, camPhi - dy * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+  updateCamera();
+});
+wrap.addEventListener('wheel', (e) => {
+  camDist = Math.min(16, Math.max(5.5, camDist + e.deltaY * 0.005));
+  updateCamera();
+}, { passive: true });
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+wrap.addEventListener('click', (e) => {
+  if (dragged) return;
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+
+  const troughHits = raycaster.intersectObject(troughHitbox);
+  if (troughHits.length) { fillTrough(); return; }
+
+  const hits = raycaster.intersectObjects([topSlab, dirtPatch]);
+  if (hits.length) {
+    const p = hits[0].point;
+    // don't let ground clicks inside the pig mud trigger chicken feed
+    const distToMud = Math.hypot(p.x - pigMudCenter.x, p.z - pigMudCenter.z);
+    if (distToMud < 0.85) {
+      showToast('The pigs eat from their trough.');
+      return;
+    }
+    scatterFeed(p.x, p.z);
+  }
+});
+
+let toastTimeout;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => el.classList.remove('show'), 2600);
+}
+let fedCount = 0;
+function incrementFed() {
+  fedCount++;
+  document.getElementById('feed-count').textContent = fedCount;
+}
+
+// ================= LOOP =================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.getElapsedTime();
+
+  island.rotation.y = Math.sin(t * 0.08) * 0.02;
+  island.position.y = Math.sin(t * 0.35) * 0.08;
+
+  floatRocks.forEach(r => {
+    r.position.y = r.userData.baseY + Math.sin(t * 0.6 + r.userData.phase) * 0.15;
+    r.rotation.y += dt * 0.04;
+  });
+
+  // chickens — idle wander stays close to the coop, so they visibly "live" there
+  chickens.forEach(c => {
+    const cd = c.userData;
+    if (cd.state === 'idle') {
+      const orbitAng = t * 0.3 + cd.wanderPhase;
+      const desiredX = coopHome.x + Math.cos(orbitAng) * cd.homeRadius;
+      const desiredZ = coopHome.z + Math.sin(orbitAng) * cd.homeRadius;
+      c.position.x += (desiredX - c.position.x) * dt * 0.6;
+      c.position.z += (desiredZ - c.position.z) * dt * 0.6;
+      c.position.y = island.position.y + 0.5 + Math.abs(Math.sin(t * 3 + cd.wanderPhase)) * 0.008;
+      if (cd.head) cd.head.rotation.y = Math.sin(t * 1.5 + cd.wanderPhase) * 0.3;
+    } else if (cd.state === 'walking' && cd.target) {
+      const tp = cd.target.position;
+      const dir = new THREE.Vector3(tp.x - c.position.x, 0, tp.z - c.position.z);
+      const dist = dir.length();
+      if (dist < 0.1) {
+        cd.state = 'pecking'; cd.peckT = 0;
+      } else {
+        dir.normalize();
+        c.position.x += dir.x * dt * 0.7;
+        c.position.z += dir.z * dt * 0.7;
+        c.rotation.y = Math.atan2(dir.x, dir.z);
+        c.position.y = island.position.y + 0.5 + Math.abs(Math.sin(t * 10)) * 0.02;
+      }
+    } else if (cd.state === 'pecking') {
+      cd.peckT += dt;
+      if (cd.head) cd.head.position.y = 0.27 - Math.abs(Math.sin(t * 9)) * 0.08;
+      if (cd.peckT > 0.5) {
+        if (cd.head) cd.head.position.y = 0.27;
+        const pieces = cd.feedPieces || [];
+        const idx = pieces.indexOf(cd.target);
+        if (idx >= 0) { feedGroup.remove(cd.target); pieces.splice(idx, 1); }
+        incrementFed();
+        if (pieces.length > 0) {
+          cd.target = pieces[0];
+          cd.state = 'walking';
+        } else {
+          cd.state = 'idle'; // idle pull-back naturally walks it home to the coop
+          cd.target = null;
+        }
+      }
+    }
+  });
+
+  // pigs — idle wander stays within the mud circle, feed only from the trough
+  const troughWorldPos = new THREE.Vector3();
+  trough.getWorldPosition(troughWorldPos);
+  pigs.forEach(p => {
+    const pd = p.userData;
+    if (pd.state === 'idle') {
+      const orbitAng = t * 0.2 + pd.wanderPhase;
+      const desiredX = pigMudCenter.x + Math.cos(orbitAng) * pd.homeRadius;
+      const desiredZ = pigMudCenter.z + Math.sin(orbitAng) * pd.homeRadius;
+      p.position.x += (desiredX - p.position.x) * dt * 0.4;
+      p.position.z += (desiredZ - p.position.z) * dt * 0.4;
+      p.position.y = island.position.y + 0.5;
+      if (pd.head) pd.head.rotation.x = Math.sin(t * 1.2 + pd.wanderPhase) * 0.1;
+    } else if (pd.state === 'walking') {
+      const tp = troughWorldPos;
+      const dir = new THREE.Vector3(tp.x - p.position.x, 0, tp.z - p.position.z);
+      const dist = dir.length();
+      if (dist < 0.25) {
+        pd.state = 'pecking'; pd.peckT = 0;
+      } else {
+        dir.normalize();
+        p.position.x += dir.x * dt * 0.5;
+        p.position.z += dir.z * dt * 0.5;
+        p.rotation.y = Math.atan2(dir.x, dir.z);
+      }
+    } else if (pd.state === 'pecking') {
+      pd.peckT += dt;
+      if (pd.head) pd.head.rotation.x = Math.sin(t * 8) * 0.2;
+      if (pd.peckT > 0.7) {
+        if (pd.head) pd.head.rotation.x = 0;
+        incrementFed();
+        if (pd.toTrough) slop.visible = false;
+        pd.state = 'idle';
+        pd.target = null;
+        pd.toTrough = false;
+      }
+    }
+  });
+
+  updateCamera();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    const l = document.getElementById('loading');
+    l.style.opacity = '0';
+    setTimeout(() => l.style.display = 'none', 800);
+  }, 500);
+});
+</script>
+
+</body>
+</html>

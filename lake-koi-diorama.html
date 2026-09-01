@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lake — A Floating Diorama</title>
+<style>
+  :root {
+    --bg: #f0ddc5;
+    --ink: #1e2b27;
+    --muted: #7f8f89;
+    --accent: #2f8f82;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: 'Georgia', 'Times New Roman', serif;
+    overflow: hidden;
+    height: 100%; width: 100%;
+  }
+  #canvas-wrap {
+    position: fixed; inset: 0;
+    z-index: 1;
+    cursor: grab;
+  }
+  #canvas-wrap.grabbing { cursor: grabbing; }
+  canvas { display: block; }
+
+  #hud {
+    position: fixed; inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    padding: 5vh 6vw;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .eyebrow {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    color: #c1552f;
+    margin-bottom: 14px;
+    font-weight: 700;
+  }
+  h1 {
+    font-size: clamp(2.2rem, 5.5vw, 3.8rem);
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .top p {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14.5px;
+    color: var(--muted);
+    max-width: 36ch;
+    margin-top: 14px;
+    line-height: 1.6;
+  }
+  .bottom {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+  .legend {
+    display: flex;
+    gap: 26px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #food-counter {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    color: var(--ink);
+    background: rgba(255,255,255,0.5);
+    backdrop-filter: blur(10px);
+    padding: 10px 18px;
+    border-radius: 100px;
+    pointer-events: auto;
+  }
+  #toast {
+    position: fixed;
+    bottom: 13vh; left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-style: italic;
+    font-size: 15px;
+    color: var(--ink);
+    background: rgba(255,255,255,0.6);
+    backdrop-filter: blur(10px);
+    padding: 10px 22px;
+    border-radius: 100px;
+    opacity: 0;
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    z-index: 6;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #loading {
+    position: fixed; inset: 0;
+    background: var(--bg);
+    z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--muted);
+    transition: opacity 0.8s;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">Filling the Lake</div>
+<div id="canvas-wrap"></div>
+
+<div id="hud">
+  <div class="top">
+    <div class="eyebrow">A Floating Diorama</div>
+    <h1>Lake</h1>
+    <p>One small pond, unmoored. Drag to orbit, scroll to lean in, click the water to drop food for the koi.</p>
+  </div>
+  <div class="bottom">
+    <div class="legend">
+      <div>Drag · Orbit</div>
+      <div>Scroll · Zoom</div>
+      <div>Click Water · Feed</div>
+    </div>
+    <div id="food-counter">Koi fed: <span id="food-count">0</span></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+// ================= PALETTE =================
+const PALETTE = {
+  water: 0x3f9b93,
+  waterDeep: 0x1f5c58,
+  bank: 0x6a9464,
+  bankShade: 0x4f7a4b,
+  rock: 0x8a7658,
+  rockDark: 0x63533b,
+  lilyPad: 0x3f8a4f,
+  lilyPadShade: 0x2f6b3c,
+  lilyFlower: 0xe8879e,
+  reed: 0x6fae5a,
+  koiOrange: 0xe8763c,
+  koiWhite: 0xf5ede0,
+  koiBlack: 0x2a241d,
+  dragonflyBody: 0x3f7ea8,
+  dragonflyWing: 0xdcedf0,
+  bg: 0xf0ddc5,
+};
+
+// ================= SCENE / CAMERA / RENDERER =================
+const wrap = document.getElementById('canvas-wrap');
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+let camDist = 11, camTheta = 0.5, camPhi = 1.15;
+function updateCamera() {
+  camera.position.set(
+    camDist * Math.sin(camPhi) * Math.sin(camTheta),
+    camDist * Math.cos(camPhi) + 0.5,
+    camDist * Math.sin(camPhi) * Math.cos(camTheta)
+  );
+  camera.lookAt(0, 0.5, 0);
+}
+updateCamera();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(PALETTE.bg, 1);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+wrap.appendChild(renderer.domElement);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ================= LIGHTS =================
+const ambient = new THREE.HemisphereLight(0xf3f7e8, 0x5a7a56, 0.6);
+scene.add(ambient);
+const key = new THREE.DirectionalLight(0xfff3d8, 1.25);
+key.position.set(5, 9, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+key.shadow.camera.left = -6; key.shadow.camera.right = 6;
+key.shadow.camera.top = 6; key.shadow.camera.bottom = -6;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x9fe0d4, 0.5);
+rim.position.set(-6, 3, -6);
+scene.add(rim);
+
+// ================= HELPERS =================
+function facetMat(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color, flatShading: true, roughness: opts.roughness ?? 0.7, metalness: opts.metalness ?? 0.02,
+    transparent: opts.transparent ?? false, opacity: opts.opacity ?? 1,
+  });
+}
+function mesh(geo, mat, castShadow = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = castShadow; m.receiveShadow = true;
+  return m;
+}
+
+// ================= FLOATING ISLAND =================
+const island = new THREE.Group();
+scene.add(island);
+
+// top slab — grassy bank ring
+const topShape = new THREE.CylinderGeometry(3.3, 3.5, 0.5, 8, 1);
+const topMat = facetMat(PALETTE.bank, { roughness: 0.85 });
+const topSlab = mesh(topShape, topMat);
+topSlab.position.y = 0.2;
+island.add(topSlab);
+
+// under-rock, tapering to a point
+const rockShape = new THREE.ConeGeometry(3.3, 4.0, 8, 1);
+const rockMat = facetMat(PALETTE.rockDark, { roughness: 0.85 });
+const rock = mesh(rockShape, rockMat);
+rock.rotation.y = Math.PI / 8;
+rock.position.y = -2.0;
+island.add(rock);
+
+const ringShape = new THREE.CylinderGeometry(3.4, 3.3, 0.28, 8, 1);
+const ringMat = facetMat(PALETTE.rock, { roughness: 0.7 });
+const ring = mesh(ringShape, ringMat);
+ring.position.y = -0.14;
+island.add(ring);
+
+// the pond itself — most of the island's surface
+const pondGeo = new THREE.CylinderGeometry(2.5, 2.5, 0.08, 24);
+const pondMat = new THREE.MeshStandardMaterial({ color: PALETTE.water, roughness: 0.12, metalness: 0.25, flatShading: true });
+const pond = mesh(pondGeo, pondMat);
+pond.position.set(0, 0.47, 0);
+island.add(pond);
+
+// deeper center tint
+const pondDeepGeo = new THREE.CylinderGeometry(1.3, 1.3, 0.02, 24);
+const pondDeepMat = new THREE.MeshStandardMaterial({ color: PALETTE.waterDeep, roughness: 0.15, metalness: 0.2, transparent: true, opacity: 0.7 });
+const pondDeep = mesh(pondDeepGeo, pondDeepMat, false);
+pondDeep.position.set(0, 0.52, 0);
+island.add(pondDeep);
+
+// grass rim detail — a few rounded mounds
+function grassMound(x, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.bankShade, { roughness: 0.8 });
+  const d = mesh(g, m);
+  d.scale.set(1, 0.45, 1);
+  d.position.set(x, 0.46 + s * 0.2, z);
+  island.add(d);
+}
+grassMound(2.6, 1.4, 0.4);
+grassMound(-2.7, -1.0, 0.35);
+grassMound(2.3, -2.0, 0.3);
+
+// reeds — clustered along one edge
+function reed(x, z, h) {
+  const g = new THREE.CylinderGeometry(0.015, 0.025, h, 5);
+  const m = facetMat(PALETTE.reed, { roughness: 0.7 });
+  const r = mesh(g, m, false);
+  r.position.set(x, 0.46 + h / 2, z);
+  r.rotation.z = (Math.random() - 0.5) * 0.15;
+  island.add(r);
+  // small blade tip
+  const tip = mesh(new THREE.ConeGeometry(0.03, 0.15, 4), m, false);
+  tip.position.set(x, 0.46 + h + 0.05, z);
+  island.add(tip);
+}
+for (let i = 0; i < 9; i++) {
+  const ang = -0.6 + Math.random() * 1.0;
+  const rad = 2.7 + Math.random() * 0.4;
+  reed(Math.cos(ang) * rad, Math.sin(ang) * rad, 0.35 + Math.random() * 0.3);
+}
+
+// lily pads floating on the water
+const lilyPads = [];
+function lilyPad(x, z, s, withFlower) {
+  const g = new THREE.CylinderGeometry(s, s, 0.03, 8);
+  const m = facetMat(PALETTE.lilyPad, { roughness: 0.5 });
+  const pad = mesh(g, m, false);
+  pad.position.set(x, 0.51, z);
+  pad.userData = { baseY: 0.51, phase: Math.random() * 10 };
+  island.add(pad);
+  lilyPads.push(pad);
+  if (withFlower) {
+    const flowerMat = facetMat(PALETTE.lilyFlower, { roughness: 0.5 });
+    for (let i = 0; i < 5; i++) {
+      const petal = mesh(new THREE.IcosahedronGeometry(0.05, 0), flowerMat, false);
+      petal.scale.set(1, 0.4, 0.6);
+      const a = (i / 5) * Math.PI * 2;
+      petal.position.set(x + Math.cos(a) * 0.05, 0.55, z + Math.sin(a) * 0.05);
+      petal.rotation.y = a;
+      island.add(petal);
+    }
+  }
+}
+lilyPad(0.9, 0.6, 0.32, true);
+lilyPad(-0.7, 1.0, 0.26, false);
+lilyPad(0.3, -1.1, 0.3, false);
+lilyPad(-1.2, -0.5, 0.24, true);
+lilyPad(1.6, -0.2, 0.22, false);
+
+// sparkle trail off the bottom point (matches atlas motif)
+const trailGeo = new THREE.BufferGeometry();
+const TRAIL_N = 40;
+const trailPos = new Float32Array(TRAIL_N * 3);
+for (let i = 0; i < TRAIL_N; i++) {
+  const t = i / TRAIL_N;
+  trailPos[i*3] = (Math.random() - 0.5) * 0.3 * (1 - t);
+  trailPos[i*3+1] = -2.0 - t * 2.2;
+  trailPos[i*3+2] = (Math.random() - 0.5) * 0.3 * (1 - t);
+}
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+const trailMat = new THREE.PointsMaterial({ color: 0x9fe0d4, size: 0.045, transparent: true, opacity: 0.6 });
+const trail = new THREE.Points(trailGeo, trailMat);
+island.add(trail);
+
+// ================= FLOATING ROCKS AROUND =================
+function floatRock(x, y, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.rock, { roughness: 0.7 });
+  const r = mesh(g, m);
+  r.position.set(x, y, z);
+  r.rotation.set(Math.random(), Math.random(), Math.random());
+  r.userData = { baseY: y, phase: Math.random() * 10 };
+  scene.add(r);
+  // little green cap
+  const capMat = facetMat(PALETTE.bankShade, { roughness: 0.8 });
+  const cap = mesh(new THREE.IcosahedronGeometry(s * 0.6, 0), capMat);
+  cap.scale.set(1, 0.5, 1);
+  cap.position.set(x, y + s * 0.55, z);
+  cap.userData = { baseY: y + s * 0.55, phase: r.userData.phase };
+  scene.add(cap);
+  return [r, cap];
+}
+const floatRocks = [
+  ...floatRock(-5.2, 0.2, 1.5, 0.45),
+  ...floatRock(5.4, -0.3, 1.0, 0.38),
+  ...floatRock(0.6, -1.9, -5.4, 0.32),
+];
+
+// ================= KOI (icosahedron-built, faceted, with eyes) =================
+function buildKoi(colorMode) {
+  const g = new THREE.Group();
+  const bodyColor = colorMode === 'white' ? PALETTE.koiWhite : PALETTE.koiOrange;
+  const bodyMat = facetMat(bodyColor, { roughness: 0.4, metalness: 0.05 });
+  const patchMat = facetMat(colorMode === 'white' ? PALETTE.koiOrange : PALETTE.koiBlack, { roughness: 0.4 });
+  const finMat = facetMat(bodyColor, { roughness: 0.4, transparent: true, opacity: 0.85 });
+  const eyeMat = facetMat(0x161311, { roughness: 0.15 });
+
+  const body = mesh(new THREE.IcosahedronGeometry(0.14, 1), bodyMat, false);
+  body.scale.set(1.9, 0.7, 0.85);
+  g.add(body);
+
+  const patch = mesh(new THREE.IcosahedronGeometry(0.08, 1), patchMat, false);
+  patch.scale.set(1.1, 0.6, 0.7);
+  patch.position.set(0.05, 0.05, 0.08);
+  g.add(patch);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.09, 1), bodyMat, false);
+  head.scale.set(1.1, 0.85, 0.85);
+  head.position.set(0.24, 0, 0);
+  g.add(head);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.014, 8, 8), eyeMat, false);
+    eye.position.set(0.3, 0.02, s * 0.06);
+    g.add(eye);
+  });
+
+  // tail fin — flattened triangle
+  const tail = mesh(new THREE.ConeGeometry(0.14, 0.02, 4), finMat, false);
+  tail.rotation.z = Math.PI / 2;
+  tail.rotation.y = Math.PI / 4;
+  tail.scale.set(1, 1.8, 1);
+  tail.position.set(-0.28, 0, 0);
+  g.add(tail);
+  g.userData.tail = tail;
+
+  // dorsal fin
+  const dorsal = mesh(new THREE.ConeGeometry(0.06, 0.02, 4), finMat, false);
+  dorsal.rotation.x = Math.PI / 2;
+  dorsal.position.set(0, 0.09, 0);
+  g.add(dorsal);
+
+  return g;
+}
+
+const koiFish = [];
+const koiColors = ['orange', 'white', 'orange', 'white'];
+koiColors.forEach((c, i) => {
+  const koi = buildKoi(c);
+  const ang = (i / koiColors.length) * Math.PI * 2;
+  const rad = 0.8 + Math.random() * 1.2;
+  koi.position.set(Math.cos(ang) * rad, 0.5, Math.sin(ang) * rad);
+  koi.userData = {
+    angle: ang, radius: rad, speed: 0.25 + Math.random() * 0.15,
+    state: 'swim', target: null, bob: Math.random() * 10,
+  };
+  scene.add(koi);
+  koiFish.push(koi);
+});
+
+// ================= DRAGONFLIES =================
+function buildDragonfly() {
+  const g = new THREE.Group();
+  const bodyMat = facetMat(PALETTE.dragonflyBody, { roughness: 0.4, metalness: 0.15 });
+  const wingMat = facetMat(PALETTE.dragonflyWing, { roughness: 0.3, transparent: true, opacity: 0.55 });
+
+  const body = mesh(new THREE.CylinderGeometry(0.012, 0.008, 0.22, 6), bodyMat, false);
+  body.rotation.z = Math.PI / 2;
+  g.add(body);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.02, 0), bodyMat, false);
+  head.position.set(0.12, 0, 0);
+  g.add(head);
+
+  [-1, 1].forEach(s => {
+    const wing = mesh(new THREE.PlaneGeometry(0.16, 0.05), wingMat, false);
+    wing.position.set(0, 0.01, s * 0.04);
+    wing.rotation.x = s * 0.3;
+    g.add(wing);
+    g.userData['wing' + s] = wing;
+  });
+
+  return g;
+}
+const dragonflies = [];
+for (let i = 0; i < 3; i++) {
+  const d = buildDragonfly();
+  d.userData.orbitR = 1.5 + Math.random() * 1.2;
+  d.userData.orbitSpeed = 0.4 + Math.random() * 0.3;
+  d.userData.orbitPhase = Math.random() * Math.PI * 2;
+  d.userData.height = 0.9 + Math.random() * 0.5;
+  scene.add(d);
+  dragonflies.push(d);
+}
+
+// ================= FOOD + RIPPLES =================
+const foodGroup = new THREE.Group();
+scene.add(foodGroup);
+const foodMat = facetMat(0xd9c9a3, { roughness: 0.6 });
+const ripples = [];
+function spawnRipple(x, z) {
+  const g = new THREE.RingGeometry(0.05, 0.08, 24);
+  const m = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.6, side: THREE.DoubleSide });
+  const ring = new THREE.Mesh(g, m);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(x, 0.53, z);
+  ring.userData = { t: 0 };
+  scene.add(ring);
+  ripples.push(ring);
+}
+function dropFood(x, z) {
+  const f = mesh(new THREE.IcosahedronGeometry(0.035, 0), foodMat, false);
+  f.position.set(x, 0.53, z);
+  foodGroup.add(f);
+  spawnRipple(x, z);
+  // assign nearest idle koi
+  let nearest = null, nearestDist = Infinity;
+  koiFish.forEach(k => {
+    if (k.userData.state === 'swim') {
+      const d = Math.hypot(k.position.x - x, k.position.z - z);
+      if (d < nearestDist) { nearestDist = d; nearest = k; }
+    }
+  });
+  if (nearest) {
+    nearest.userData.state = 'seeking';
+    nearest.userData.target = f;
+  }
+}
+
+// ================= INTERACTION =================
+let isDragging = false, lastX = 0, lastY = 0, dragged = false;
+wrap.addEventListener('mousedown', (e) => {
+  isDragging = true; dragged = false; lastX = e.clientX; lastY = e.clientY;
+  wrap.classList.add('grabbing');
+});
+window.addEventListener('mouseup', () => { isDragging = false; wrap.classList.remove('grabbing'); });
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
+  camTheta -= dx * 0.005;
+  camPhi = Math.min(1.5, Math.max(0.55, camPhi - dy * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+  updateCamera();
+});
+wrap.addEventListener('wheel', (e) => {
+  camDist = Math.min(16, Math.max(5.5, camDist + e.deltaY * 0.005));
+  updateCamera();
+}, { passive: true });
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+wrap.addEventListener('click', (e) => {
+  if (dragged) return;
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const hits = raycaster.intersectObject(pond);
+  if (hits.length) {
+    const p = hits[0].point;
+    dropFood(p.x, p.z);
+    showToast('Food, dropped on the water.');
+  }
+});
+
+let toastTimeout;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => el.classList.remove('show'), 2600);
+}
+let fedCount = 0;
+function incrementFed() {
+  fedCount++;
+  document.getElementById('food-count').textContent = fedCount;
+}
+
+// ================= LOOP =================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.getElapsedTime();
+
+  island.rotation.y = Math.sin(t * 0.08) * 0.02;
+  island.position.y = Math.sin(t * 0.35) * 0.08;
+
+  floatRocks.forEach(r => {
+    r.position.y = r.userData.baseY + Math.sin(t * 0.6 + r.userData.phase) * 0.15;
+    r.rotation.y += dt * 0.04;
+  });
+
+  lilyPads.forEach(p => {
+    p.position.y = island.position.y + p.userData.baseY + Math.sin(t * 1.2 + p.userData.phase) * 0.01;
+  });
+
+  // ripples expand and fade
+  for (let i = ripples.length - 1; i >= 0; i--) {
+    const r = ripples[i];
+    r.userData.t += dt;
+    const s = 1 + r.userData.t * 3;
+    r.scale.set(s, s, s);
+    r.material.opacity = Math.max(0, 0.6 - r.userData.t * 0.6);
+    if (r.userData.t > 1.2) { scene.remove(r); ripples.splice(i, 1); }
+  }
+
+  // dragonflies loop above the pond
+  dragonflies.forEach(d => {
+    const ang = t * d.userData.orbitSpeed + d.userData.orbitPhase;
+    d.position.set(
+      Math.cos(ang) * d.userData.orbitR,
+      island.position.y + d.userData.height + Math.sin(t * 3 + d.userData.orbitPhase) * 0.06,
+      Math.sin(ang) * d.userData.orbitR
+    );
+    d.rotation.y = -ang + Math.PI / 2;
+    const w = Math.sin(t * 30) * 0.4;
+    if (d.userData.wing1) d.userData.wing1.rotation.x = 0.3 + w;
+    if (d.userData['wing-1']) d.userData['wing-1'].rotation.x = -0.3 - w;
+  });
+
+  // koi behavior
+  koiFish.forEach(k => {
+    const kd = k.userData;
+    if (kd.state === 'swim') {
+      kd.angle += dt * kd.speed * 0.4;
+      k.position.x = Math.cos(kd.angle) * kd.radius;
+      k.position.z = Math.sin(kd.angle) * kd.radius;
+      k.position.y = island.position.y + 0.5 + Math.sin(t * 2 + kd.bob) * 0.015;
+      k.rotation.y = -kd.angle + Math.PI / 2;
+    } else if (kd.state === 'seeking' && kd.target) {
+      const tp = kd.target.position;
+      const dir = new THREE.Vector3(tp.x - k.position.x, 0, tp.z - k.position.z);
+      const dist = dir.length();
+      if (dist < 0.1) {
+        kd.state = 'eating'; kd.eatT = 0;
+      } else {
+        dir.normalize();
+        k.position.x += dir.x * dt * 0.9;
+        k.position.z += dir.z * dt * 0.9;
+        k.rotation.y = Math.atan2(dir.x, dir.z) + Math.PI / 2;
+        k.position.y = island.position.y + 0.5 + Math.sin(t * 2 + kd.bob) * 0.015;
+      }
+    } else if (kd.state === 'eating') {
+      kd.eatT += dt;
+      if (kd.eatT > 0.4) {
+        foodGroup.remove(kd.target);
+        incrementFed();
+        showToast('A koi rises to feed.');
+        kd.target = null;
+        kd.state = 'swim';
+        kd.radius = 0.8 + Math.random() * 1.2;
+      }
+    }
+    // tail wag always
+    if (k.userData.tail) k.userData.tail.rotation.y = Math.PI / 4 + Math.sin(t * 8 + kd.bob) * 0.3;
+  });
+
+  updateCamera();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    const l = document.getElementById('loading');
+    l.style.opacity = '0';
+    setTimeout(() => l.style.display = 'none', 800);
+  }, 500);
+});
+</script>
+
+</body>
+</html>

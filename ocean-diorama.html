@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ocean — A Floating Diorama</title>
+<style>
+  :root {
+    --bg-a: #0a2a3f;
+    --bg-b: #12506e;
+    --ink: #dff2f5;
+    --muted: #7fa8b8;
+    --accent: #4fd8c8;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: radial-gradient(ellipse at 50% 20%, var(--bg-b) 0%, var(--bg-a) 75%);
+    color: var(--ink);
+    font-family: 'Georgia', 'Times New Roman', serif;
+    overflow: hidden;
+    height: 100%; width: 100%;
+  }
+  #canvas-wrap { position: fixed; inset: 0; z-index: 1; cursor: grab; }
+  #canvas-wrap.grabbing { cursor: grabbing; }
+  canvas { display: block; }
+
+  #hud {
+    position: fixed; inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    padding: 5vh 6vw;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .eyebrow {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+    font-weight: 700;
+  }
+  h1 {
+    font-size: clamp(2.2rem, 5.5vw, 3.8rem);
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .top p {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14.5px;
+    color: var(--muted);
+    max-width: 36ch;
+    margin-top: 14px;
+    line-height: 1.6;
+  }
+  .bottom { display: flex; align-items: flex-end; justify-content: space-between; }
+  .legend {
+    display: flex;
+    gap: 26px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #sight-counter {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    color: var(--ink);
+    background: rgba(255,255,255,0.12);
+    backdrop-filter: blur(10px);
+    padding: 10px 18px;
+    border-radius: 100px;
+    pointer-events: auto;
+  }
+  #toast {
+    position: fixed;
+    bottom: 13vh; left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-style: italic;
+    font-size: 15px;
+    color: var(--ink);
+    background: rgba(255,255,255,0.14);
+    backdrop-filter: blur(10px);
+    padding: 10px 22px;
+    border-radius: 100px;
+    opacity: 0;
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    z-index: 6;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #loading {
+    position: fixed; inset: 0;
+    background: var(--bg-a);
+    z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--muted);
+    transition: opacity 0.8s;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">Sinking Below</div>
+<div id="canvas-wrap"></div>
+
+<div id="hud">
+  <div class="top">
+    <div class="eyebrow">A Floating Diorama</div>
+    <h1>Ocean</h1>
+    <p>One small reef, unmoored, deep below. Drag to orbit, scroll to lean in, click near the octopus — if you can find it.</p>
+  </div>
+  <div class="bottom">
+    <div class="legend">
+      <div>Drag · Orbit</div>
+      <div>Scroll · Zoom</div>
+      <div>Click Octopus · Spot It</div>
+    </div>
+    <div id="sight-counter">Sightings: <span id="sight-count">0</span></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+// ================= PALETTE =================
+const PALETTE = {
+  reefBase: 0x0f3a52,
+  reefBaseDark: 0x0a2638,
+  sand: 0xc9a870,
+  sandDark: 0xa8895c,
+  coralPink: 0xe8708a,
+  coralOrange: 0xe89a5c,
+  coralPurple: 0x9a6fc9,
+  coralYellow: 0xe8c85c,
+  kelpGreen: 0x2f8a6a,
+  kelpGreenLight: 0x4fae8a,
+  fishBlue: 0x4fb8e8,
+  fishYellow: 0xe8c23c,
+  fishOrange: 0xe8703c,
+  turtleGreen: 0x4a8a5c,
+  turtleShell: 0x3a6b48,
+  octoBase: 0xc9709a, // default resting color
+  octoHidden: 0x5c7a6a, // camouflaged color when hiding
+  bg: 0x0e3a52,
+};
+
+// ================= SCENE / CAMERA / RENDERER =================
+const wrap = document.getElementById('canvas-wrap');
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(PALETTE.bg, 0.05);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+let camDist = 11, camTheta = 0.5, camPhi = 1.15;
+function updateCamera() {
+  camera.position.set(
+    camDist * Math.sin(camPhi) * Math.sin(camTheta),
+    camDist * Math.cos(camPhi) + 0.5,
+    camDist * Math.sin(camPhi) * Math.cos(camTheta)
+  );
+  camera.lookAt(0, 0.5, 0);
+}
+updateCamera();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(PALETTE.bg, 1);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+wrap.appendChild(renderer.domElement);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ================= LIGHTS (deep blue, with caustic-like flicker) =================
+const ambient = new THREE.HemisphereLight(0x2f7a9a, 0x0a2030, 0.7);
+scene.add(ambient);
+const key = new THREE.DirectionalLight(0x8fd8f5, 1.1);
+key.position.set(3, 9, 3);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+key.shadow.camera.left = -6; key.shadow.camera.right = 6;
+key.shadow.camera.top = 6; key.shadow.camera.bottom = -6;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x4fd8c8, 0.5);
+rim.position.set(-5, 2, -6);
+scene.add(rim);
+// bioluminescent-feeling point lights dotted around the reef
+const glow1 = new THREE.PointLight(0x4fe8c8, 0.25, 2);
+glow1.position.set(1.8, 0.6, 1.4);
+scene.add(glow1);
+const glow2 = new THREE.PointLight(0x6f9aff, 0.2, 2);
+glow2.position.set(-1.8, 0.5, -1.4);
+scene.add(glow2);
+
+// ================= HELPERS =================
+function facetMat(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color, flatShading: true, roughness: opts.roughness ?? 0.6, metalness: opts.metalness ?? 0.05,
+    transparent: opts.transparent ?? false, opacity: opts.opacity ?? 1,
+    emissive: opts.emissive ?? 0x000000, emissiveIntensity: opts.emissiveIntensity ?? 0,
+  });
+}
+function mesh(geo, mat, castShadow = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = castShadow; m.receiveShadow = true;
+  return m;
+}
+
+// ================= FLOATING ISLAND (reef base) =================
+const island = new THREE.Group();
+scene.add(island);
+
+const topShape = new THREE.CylinderGeometry(3.3, 3.5, 0.5, 8, 1);
+const topMat = facetMat(PALETTE.sand, { roughness: 0.85 });
+const topSlab = mesh(topShape, topMat);
+topSlab.position.y = 0.2;
+island.add(topSlab);
+
+const rockShape = new THREE.ConeGeometry(3.3, 4.0, 8, 1);
+const rockMat = facetMat(PALETTE.reefBaseDark, { roughness: 0.85 });
+const rock = mesh(rockShape, rockMat);
+rock.rotation.y = Math.PI / 8;
+rock.position.y = -2.0;
+island.add(rock);
+
+const ringShape = new THREE.CylinderGeometry(3.4, 3.3, 0.28, 8, 1);
+const ringMat = facetMat(PALETTE.reefBase, { roughness: 0.75 });
+const ring = mesh(ringShape, ringMat);
+ring.position.y = -0.14;
+island.add(ring);
+
+// reef rock outcrops — small grey-brown stones, not giant navy domes
+const reefStoneMat1 = facetMat(0x6f7268, { roughness: 0.85 });
+const reefStoneMat2 = facetMat(0x565a50, { roughness: 0.85 });
+function reefRock(x, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = Math.random() > 0.5 ? reefStoneMat1 : reefStoneMat2;
+  const d = mesh(g, m);
+  d.scale.set(1, 0.5, 1);
+  d.position.set(x, 0.46 + s * 0.25, z);
+  d.rotation.y = Math.random() * Math.PI;
+  island.add(d);
+  return d;
+}
+reefRock(1.6, 1.2, 0.22);
+reefRock(-1.8, -1.0, 0.18);
+reefRock(1.9, 1.5, 0.13);
+reefRock(-0.9, -1.5, 0.15);
+// a small crevice cluster near the octopus for it to hide into — but the octopus itself sits in the open
+const crevice1 = reefRock(0.65, -1.15, 0.16);
+const crevice2 = reefRock(0.15, -1.55, 0.13);
+
+// ================= CORAL (redesigned for recognizable silhouettes) =================
+function branchCoral(x, z, color, h) {
+  // staghorn-style: a thick base splitting into several curving branches, each with a tapering tip
+  const g = new THREE.Group();
+  const m = facetMat(color, { roughness: 0.6 });
+  const base = mesh(new THREE.CylinderGeometry(0.035, 0.05, h * 0.3, 6), m);
+  base.position.y = h * 0.15;
+  g.add(base);
+
+  const branchCount = 5;
+  for (let i = 0; i < branchCount; i++) {
+    const a = (i / branchCount) * Math.PI * 2 + Math.random() * 0.5;
+    const lean = 0.35 + Math.random() * 0.25;
+    const len1 = h * (0.35 + Math.random() * 0.15);
+    const seg1 = mesh(new THREE.CylinderGeometry(0.022, 0.032, len1, 5), m, false);
+    seg1.position.set(Math.cos(a) * 0.04, h * 0.3 + len1 / 2 * Math.cos(lean), Math.sin(a) * 0.04);
+    seg1.rotation.x = Math.sin(a) * lean;
+    seg1.rotation.z = Math.cos(a) * lean;
+    g.add(seg1);
+
+    // tip segment continuing the curve outward and up
+    const len2 = len1 * 0.6;
+    const tipOut = Math.sin(lean) * len1;
+    const tipUp = h * 0.3 + len1 * Math.cos(lean);
+    const seg2 = mesh(new THREE.CylinderGeometry(0.014, 0.02, len2, 5), m, false);
+    seg2.position.set(Math.cos(a) * (0.04 + tipOut), tipUp + len2 / 2 * Math.cos(lean * 1.4), Math.sin(a) * (0.04 + tipOut));
+    seg2.rotation.x = Math.sin(a) * lean * 1.4;
+    seg2.rotation.z = Math.cos(a) * lean * 1.4;
+    g.add(seg2);
+  }
+  g.position.set(x, 0.45, z);
+  island.add(g);
+}
+
+function fanCoral(x, z, color, s) {
+  // a proper flat sea-fan: thin ribs fanning out within a single plane, webbed silhouette
+  const g = new THREE.Group();
+  const m = facetMat(color, { roughness: 0.5, transparent: true, opacity: 0.92, side: THREE.DoubleSide });
+  const ribCount = 7;
+  const webPoints = [];
+  for (let i = 0; i < ribCount; i++) {
+    const a = (i / (ribCount - 1)) * 1.9 - 0.95; // fan spread angle within the plane
+    const rib = mesh(new THREE.CylinderGeometry(0.006, 0.012, s, 4), m, false);
+    rib.position.set(Math.sin(a) * s * 0.5, s * 0.5 * Math.cos(a) * 0.9 + s * 0.1, 0);
+    rib.rotation.z = -a;
+    g.add(rib);
+  }
+  // webbing between ribs — a flattened wide triangle fills the fan silhouette
+  const webShape = new THREE.Shape();
+  webShape.moveTo(0, 0);
+  webShape.lineTo(-s * 0.9, s * 0.85);
+  webShape.lineTo(-s * 0.45, s * 1.05);
+  webShape.lineTo(0, s * 1.1);
+  webShape.lineTo(s * 0.45, s * 1.05);
+  webShape.lineTo(s * 0.9, s * 0.85);
+  webShape.lineTo(0, 0);
+  const webGeo = new THREE.ShapeGeometry(webShape);
+  const webMat = facetMat(color, { roughness: 0.5, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+  const web = mesh(webGeo, webMat, false);
+  g.add(web);
+
+  g.position.set(x, 0.45 + s * 0.5, z);
+  g.rotation.y = Math.random() * Math.PI * 2;
+  island.add(g);
+}
+
+function domeCoral(x, z, color, s) {
+  // brain/boulder coral — a small cluster of overlapping bumps for texture instead of one plain hemisphere
+  const g = new THREE.Group();
+  const m = facetMat(color, { roughness: 0.65, flatShading: true });
+  const main = mesh(new THREE.SphereGeometry(s, 8, 6, 0, Math.PI * 2, 0, Math.PI / 1.9), m);
+  g.add(main);
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    const bump = mesh(new THREE.IcosahedronGeometry(s * 0.4, 0), m, false);
+    bump.position.set(Math.cos(a) * s * 0.6, s * 0.35, Math.sin(a) * s * 0.6);
+    g.add(bump);
+  }
+  g.position.set(x, 0.46, z);
+  island.add(g);
+}
+branchCoral(1.1, 0.5, PALETTE.coralPink, 0.4);
+branchCoral(-0.7, 0.9, PALETTE.coralOrange, 0.32);
+branchCoral(1.5, -0.6, PALETTE.coralPurple, 0.35);
+fanCoral(-1.3, 0.4, PALETTE.coralYellow, 0.3);
+fanCoral(0.7, -1.6, PALETTE.coralPink, 0.24);
+domeCoral(-0.3, -0.7, PALETTE.coralOrange, 0.16);
+domeCoral(2.0, 0.9, PALETTE.coralPurple, 0.13);
+
+// seaweed — wide tapering blades instead of thin rods, bundled 2-3 per clump
+const kelpStalks = [];
+function seaweedBlade(x, z, h, colorMat) {
+  const segCount = 6;
+  const group = new THREE.Group();
+  const segments = [];
+  let curY = 0;
+  for (let i = 0; i < segCount; i++) {
+    const segH = h / segCount;
+    const width = 0.09 * (1 - i / segCount) + 0.02;
+    const seg = mesh(new THREE.BoxGeometry(width, segH, 0.012), colorMat, false);
+    seg.position.y = curY + segH / 2;
+    group.add(seg);
+    segments.push(seg);
+    curY += segH;
+  }
+  group.position.set(x, 0.45, z);
+  group.rotation.y = Math.random() * Math.PI;
+  island.add(group);
+  kelpStalks.push({ group, segments, phase: Math.random() * 10 });
+}
+function kelp(x, z, h) {
+  const mats = [
+    facetMat(PALETTE.kelpGreen, { roughness: 0.55, side: THREE.DoubleSide }),
+    facetMat(PALETTE.kelpGreenLight, { roughness: 0.55, side: THREE.DoubleSide }),
+    facetMat(0x1f6b4a, { roughness: 0.55, side: THREE.DoubleSide }),
+  ];
+  const bladeCount = 2 + Math.floor(Math.random() * 2);
+  for (let b = 0; b < bladeCount; b++) {
+    const ox = (Math.random() - 0.5) * 0.08;
+    const oz = (Math.random() - 0.5) * 0.08;
+    seaweedBlade(x + ox, z + oz, h * (0.85 + Math.random() * 0.3), mats[b % mats.length]);
+  }
+}
+kelp(-2.2, -0.3, 1.4);
+kelp(-2.0, 0.6, 1.1);
+kelp(2.4, -1.4, 1.3);
+kelp(2.6, -0.8, 0.9);
+
+// sparkle trail off the bottom point (cool-toned here)
+const trailGeo = new THREE.BufferGeometry();
+const TRAIL_N = 40;
+const trailPos = new Float32Array(TRAIL_N * 3);
+for (let i = 0; i < TRAIL_N; i++) {
+  const tt = i / TRAIL_N;
+  trailPos[i*3] = (Math.random() - 0.5) * 0.3 * (1 - tt);
+  trailPos[i*3+1] = -2.0 - tt * 2.2;
+  trailPos[i*3+2] = (Math.random() - 0.5) * 0.3 * (1 - tt);
+}
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+const trailMat = new THREE.PointsMaterial({ color: 0x4fd8c8, size: 0.045, transparent: true, opacity: 0.6 });
+const trail = new THREE.Points(trailGeo, trailMat);
+island.add(trail);
+
+// ================= FLOATING ROCKS AROUND =================
+function floatRock(x, y, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.reefBase, { roughness: 0.75 });
+  const r = mesh(g, m);
+  r.position.set(x, y, z);
+  r.rotation.set(Math.random(), Math.random(), Math.random());
+  r.userData = { baseY: y, phase: Math.random() * 10 };
+  scene.add(r);
+  return r;
+}
+const floatRocks = [
+  floatRock(-5.4, 0.2, 1.3, 0.42),
+  floatRock(5.5, -0.2, 1.0, 0.38),
+  floatRock(0.5, -1.7, -5.5, 0.3),
+];
+
+// ================= FISH (small schooling shapes) =================
+function buildReefFish(color) {
+  const g = new THREE.Group();
+  const bodyMat = facetMat(color, { roughness: 0.4, metalness: 0.1 });
+  const finMat = facetMat(color, { roughness: 0.4, transparent: true, opacity: 0.75 });
+  const eyeMat = facetMat(0x141210, { roughness: 0.1 });
+
+  const body = mesh(new THREE.IcosahedronGeometry(0.09, 1), bodyMat, false);
+  body.scale.set(1.6, 0.9, 0.6);
+  g.add(body);
+
+  const tail = mesh(new THREE.ConeGeometry(0.08, 0.02, 4), finMat, false);
+  tail.rotation.z = Math.PI / 2;
+  tail.rotation.y = Math.PI / 4;
+  tail.scale.set(1, 1.6, 1);
+  tail.position.set(-0.14, 0, 0);
+  g.add(tail);
+
+  const dorsal = mesh(new THREE.ConeGeometry(0.04, 0.015, 4), finMat, false);
+  dorsal.rotation.x = Math.PI / 2;
+  dorsal.position.set(0, 0.06, 0);
+  g.add(dorsal);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.011, 6, 6), eyeMat, false);
+    eye.position.set(0.09, 0.01, s * 0.035);
+    g.add(eye);
+  });
+
+  return g;
+}
+const fishColors = [PALETTE.fishBlue, PALETTE.fishYellow, PALETTE.fishOrange, PALETTE.fishBlue, PALETTE.fishYellow];
+function randomFishTarget() {
+  return new THREE.Vector3(
+    (Math.random() - 0.5) * 4.5,
+    0.55 + Math.random() * 1.1,
+    (Math.random() - 0.5) * 4.5
+  );
+}
+const fishSchool = fishColors.map((c, i) => {
+  const f = buildReefFish(c);
+  const start = randomFishTarget();
+  f.position.copy(start);
+  f.userData = {
+    target: randomFishTarget(),
+    speed: 0.35 + Math.random() * 0.35,
+    bobPhase: Math.random() * 10,
+    pauseT: 0,
+  };
+  scene.add(f);
+  return f;
+});
+
+// ================= TURTLES (slow, ambient, free-wandering — two sizes/colors) =================
+function buildTurtle(shellColor, bodyColor) {
+  const g = new THREE.Group();
+  const shellMat = facetMat(shellColor, { roughness: 0.55 });
+  const shellRimMat = facetMat(bodyColor, { roughness: 0.55 });
+  const bodyMat = facetMat(bodyColor, { roughness: 0.55 });
+  const eyeMat = facetMat(0x141210, { roughness: 0.1 });
+
+  const shell = mesh(new THREE.IcosahedronGeometry(0.24, 1), shellMat);
+  shell.scale.set(1.2, 0.55, 1);
+  shell.position.y = 0.1;
+  g.add(shell);
+  // lighter shell rim for a two-tone shell instead of one flat color
+  const shellRim = mesh(new THREE.IcosahedronGeometry(0.25, 1), shellRimMat, false);
+  shellRim.scale.set(1.24, 0.3, 1.04);
+  shellRim.position.y = 0.02;
+  g.add(shellRim);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.09, 1), bodyMat);
+  head.position.set(0.28, 0.08, 0);
+  g.add(head);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.015, 8, 8), eyeMat, false);
+    eye.position.set(0.34, 0.11, s * 0.05);
+    g.add(eye);
+  });
+
+  const flipperPositions = [[0.16, 0.24], [0.16, -0.24], [-0.18, 0.22], [-0.18, -0.22]];
+  const flippers = [];
+  flipperPositions.forEach(([lx, lz]) => {
+    const flipper = mesh(new THREE.ConeGeometry(0.09, 0.03, 4), bodyMat, false);
+    flipper.rotation.x = Math.PI / 2;
+    flipper.position.set(lx, 0.06, lz);
+    g.add(flipper);
+    flippers.push(flipper);
+  });
+
+  g.userData.flippers = flippers;
+  return g;
+}
+function randomTurtleTarget() {
+  return new THREE.Vector3(
+    (Math.random() - 0.5) * 5,
+    0.9 + Math.random() * 1.3,
+    (Math.random() - 0.5) * 5
+  );
+}
+const turtleConfigs = [
+  { shell: PALETTE.turtleShell, body: PALETTE.turtleGreen, scale: 1.0 },
+  { shell: 0x2f6b7a, body: 0x4fa8a0, scale: 0.62 }, // smaller, blue-green second turtle
+];
+const turtles = turtleConfigs.map(cfg => {
+  const tt = buildTurtle(cfg.shell, cfg.body);
+  tt.scale.setScalar(cfg.scale);
+  const start = randomTurtleTarget();
+  tt.position.copy(start);
+  Object.assign(tt.userData, {
+    target: randomTurtleTarget(),
+    speed: 0.18 + Math.random() * 0.1,
+    bobPhase: Math.random() * 10,
+  });
+  scene.add(tt);
+  return tt;
+});
+
+// ================= OCTOPUS (changes color / hides when approached) =================
+function buildOctopus() {
+  const g = new THREE.Group();
+  const skinMat = facetMat(PALETTE.octoBase, { roughness: 0.45, emissive: 0x2a1020, emissiveIntensity: 0.15 });
+  const eyeMat = facetMat(0x141210, { roughness: 0.1 });
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.16, 1), skinMat);
+  head.scale.set(1, 0.9, 1);
+  head.position.y = 0.22;
+  g.add(head);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.024, 8, 8), eyeMat, false);
+    eye.position.set(0.1, 0.26, s * 0.1);
+    g.add(eye);
+  });
+
+  // 6 simplified tentacles (stylized, not 8, for a cleaner low-poly read) — curling segments
+  const tentacles = [];
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const tentGroup = new THREE.Group();
+    let curveY = 0.1;
+    let curveOut = 0.05;
+    for (let s = 0; s < 3; s++) {
+      const segLen = 0.11 - s * 0.02;
+      const seg = mesh(new THREE.CylinderGeometry(0.025 - s * 0.005, 0.03 - s * 0.005, segLen, 5), skinMat, false);
+      seg.position.set(Math.cos(a) * curveOut, curveY, Math.sin(a) * curveOut);
+      seg.rotation.x = Math.sin(a) * 0.5;
+      seg.rotation.z = Math.cos(a) * 0.5;
+      tentGroup.add(seg);
+      curveOut += 0.08;
+      curveY -= segLen * 0.7;
+    }
+    g.add(tentGroup);
+    tentacles.push(tentGroup);
+  }
+
+  g.userData.skinMat = skinMat;
+  g.userData.head = head;
+  g.userData.tentacles = tentacles;
+  return g;
+}
+const octopus = buildOctopus();
+octopus.scale.setScalar(1.15); // enlarged — was getting lost in the scene before
+const octoRestPos = new THREE.Vector3(0.4, 0.6, -1.35); // open sand near the crevice rocks
+octopus.position.copy(octoRestPos);
+Object.assign(octopus.userData, {
+  state: 'resting', // resting | alert | hiding | emerging
+  alertT: 0,
+  hideT: 0,
+  baseColor: new THREE.Color(PALETTE.octoBase),
+  hiddenColor: new THREE.Color(PALETTE.octoHidden),
+});
+scene.add(octopus);
+
+// invisible generous hitbox around the octopus for easier clicking
+const octoHitbox = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 8), new THREE.MeshBasicMaterial({ visible: false }));
+scene.add(octoHitbox);
+
+// ================= BIOLUMINESCENT PARTICLES =================
+const GLOW_COUNT = 60;
+const glowGeo = new THREE.BufferGeometry();
+const glowPos = new Float32Array(GLOW_COUNT * 3);
+const glowPhase = new Float32Array(GLOW_COUNT);
+for (let i = 0; i < GLOW_COUNT; i++) {
+  const ang = Math.random() * Math.PI * 2;
+  const rad = Math.random() * 3.0;
+  glowPos[i*3] = Math.cos(ang) * rad;
+  glowPos[i*3+1] = 0.4 + Math.random() * 1.8;
+  glowPos[i*3+2] = Math.sin(ang) * rad;
+  glowPhase[i] = Math.random() * 10;
+}
+glowGeo.setAttribute('position', new THREE.BufferAttribute(glowPos, 3));
+const glowMat = new THREE.PointsMaterial({ color: 0x6fe8d0, size: 0.045, transparent: true, opacity: 0.7 });
+const glowParticles = new THREE.Points(glowGeo, glowMat);
+island.add(glowParticles);
+
+// drifting "marine snow" — small pale particles slowly falling
+const SNOW_COUNT = 140;
+const snowGeo = new THREE.BufferGeometry();
+const snowPos = new Float32Array(SNOW_COUNT * 3);
+const snowSpeed = new Float32Array(SNOW_COUNT);
+for (let i = 0; i < SNOW_COUNT; i++) {
+  snowPos[i*3] = (Math.random() - 0.5) * 12;
+  snowPos[i*3+1] = Math.random() * 8 - 1;
+  snowPos[i*3+2] = (Math.random() - 0.5) * 12;
+  snowSpeed[i] = 0.004 + Math.random() * 0.006;
+}
+snowGeo.setAttribute('position', new THREE.BufferAttribute(snowPos, 3));
+const snowMat = new THREE.PointsMaterial({ color: 0xbfe8f0, size: 0.02, transparent: true, opacity: 0.4 });
+const marineSnow = new THREE.Points(snowGeo, snowMat);
+scene.add(marineSnow);
+
+// ================= BUBBLES (spawn wherever clicked) =================
+const bubbleGroup = new THREE.Group();
+scene.add(bubbleGroup);
+const bubbleMat = new THREE.MeshStandardMaterial({ color: 0xdff5ff, roughness: 0.1, metalness: 0.1, transparent: true, opacity: 0.55, flatShading: true });
+const activeBubbles = [];
+function spawnBubbles(pos) {
+  const count = 6 + Math.floor(Math.random() * 6);
+  for (let i = 0; i < count; i++) {
+    const s = 0.02 + Math.random() * 0.035;
+    const b = mesh(new THREE.IcosahedronGeometry(s, 0), bubbleMat, false);
+    b.position.set(
+      pos.x + (Math.random() - 0.5) * 0.15,
+      pos.y + Math.random() * 0.1,
+      pos.z + (Math.random() - 0.5) * 0.15
+    );
+    bubbleGroup.add(b);
+    activeBubbles.push({
+      mesh: b,
+      speed: 0.35 + Math.random() * 0.4,
+      wobble: Math.random() * 10,
+      life: 0,
+      maxLife: 1.8 + Math.random() * 1.2,
+    });
+  }
+}
+
+// a large invisible sphere so bubble-spawn clicks register even in open water
+const clickCatcher = new THREE.Mesh(
+  new THREE.SphereGeometry(9, 12, 12),
+  new THREE.MeshBasicMaterial({ visible: false, side: THREE.BackSide })
+);
+scene.add(clickCatcher);
+
+// ================= INTERACTION =================
+let isDragging = false, lastX = 0, lastY = 0, dragged = false;
+wrap.addEventListener('mousedown', (e) => {
+  isDragging = true; dragged = false; lastX = e.clientX; lastY = e.clientY;
+  wrap.classList.add('grabbing');
+});
+window.addEventListener('mouseup', () => { isDragging = false; wrap.classList.remove('grabbing'); });
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
+  camTheta -= dx * 0.005;
+  camPhi = Math.min(1.5, Math.max(0.55, camPhi - dy * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+  updateCamera();
+});
+wrap.addEventListener('wheel', (e) => {
+  camDist = Math.min(16, Math.max(5.5, camDist + e.deltaY * 0.005));
+  updateCamera();
+}, { passive: true });
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let sightCount = 0;
+function updateSightCount() {
+  document.getElementById('sight-count').textContent = sightCount;
+}
+let toastTimeout;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+wrap.addEventListener('click', (e) => {
+  if (dragged) return;
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+
+  // check octopus first — special reaction on top of the bubbles
+  const octoHits = raycaster.intersectObject(octoHitbox);
+  if (octoHits.length) {
+    const od = octopus.userData;
+    if (od.state === 'resting' || od.state === 'emerging') {
+      od.state = 'alert';
+      od.alertT = 0;
+      sightCount++;
+      updateSightCount();
+      showToast('The octopus flushes color, startled.');
+    }
+    spawnBubbles(octoHits[0].point);
+    return;
+  }
+
+  // otherwise spawn bubbles at whatever was clicked — reef floor, rocks, or open water via the fallback sphere
+  const hits = raycaster.intersectObjects([topSlab, ...floatRocks, clickCatcher]);
+  if (hits.length) {
+    spawnBubbles(hits[0].point);
+  }
+});
+
+// ================= LOOP =================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.getElapsedTime();
+
+  island.rotation.y = Math.sin(t * 0.08) * 0.02;
+  island.position.y = Math.sin(t * 0.35) * 0.08;
+
+  floatRocks.forEach(r => {
+    r.position.y = r.userData.baseY + Math.sin(t * 0.6 + r.userData.phase) * 0.15;
+    r.rotation.y += dt * 0.04;
+  });
+
+  // kelp sway
+  kelpStalks.forEach(k => {
+    k.segments.forEach((seg, i) => {
+      seg.rotation.z = Math.sin(t * 0.8 + k.phase + i * 0.5) * 0.15 * (i / k.segments.length + 0.3);
+    });
+  });
+
+  // bioluminescent particle pulse
+  const gp = glowGeo.attributes.position.array;
+  glowMat.opacity = 0.4 + Math.sin(t * 1.5) * 0.3;
+  for (let i = 0; i < GLOW_COUNT; i++) {
+    gp[i*3+1] += Math.sin(t * 0.5 + glowPhase[i]) * 0.0008;
+  }
+  glowGeo.attributes.position.needsUpdate = true;
+
+  // marine snow drift
+  const sp = snowGeo.attributes.position.array;
+  for (let i = 0; i < SNOW_COUNT; i++) {
+    sp[i*3+1] -= snowSpeed[i];
+    if (sp[i*3+1] < -2) sp[i*3+1] = 6;
+  }
+  snowGeo.attributes.position.needsUpdate = true;
+
+  // caustic-like flicker on the key light intensity
+  key.intensity = 1.1 + Math.sin(t * 2.3) * 0.08 + Math.sin(t * 5.1) * 0.04;
+
+  // fish — free wandering, not fixed orbits
+  fishSchool.forEach(f => {
+    const fu = f.userData;
+    const dir = new THREE.Vector3().subVectors(fu.target, f.position);
+    const dist = dir.length();
+    if (dist < 0.15) {
+      fu.pauseT += dt;
+      if (fu.pauseT > 0.3 + Math.random() * 0.6) {
+        fu.target = randomFishTarget();
+        fu.pauseT = 0;
+      }
+    } else {
+      dir.normalize();
+      f.position.addScaledVector(dir, fu.speed * dt);
+      f.position.y += Math.sin(t * 2 + fu.bobPhase) * 0.002;
+      f.rotation.y = Math.atan2(dir.x, dir.z);
+    }
+  });
+
+  // turtles — free wandering, slow, occasionally changing direction
+  turtles.forEach(tt => {
+    const tu = tt.userData;
+    const dir = new THREE.Vector3().subVectors(tu.target, tt.position);
+    const dist = dir.length();
+    if (dist < 0.25) {
+      tu.target = randomTurtleTarget();
+    } else {
+      dir.normalize();
+      tt.position.addScaledVector(dir, tu.speed * dt);
+      tt.position.y += Math.sin(t * 0.4 + tu.bobPhase) * 0.002;
+      tt.rotation.y = Math.atan2(dir.x, dir.z);
+    }
+    if (tu.flippers) tu.flippers.forEach((fl, i) => { fl.rotation.z = Math.sin(t * 2 + i + tu.bobPhase) * 0.4; });
+  });
+
+  // octopus state machine
+  const od = octopus.userData;
+  octoHitbox.position.copy(octopus.position);
+  octoHitbox.position.y += 0.1;
+
+  if (od.state === 'resting') {
+    octopus.position.y = octoRestPos.y + island.position.y + Math.sin(t * 1.2) * 0.015;
+    if (od.tentacles) od.tentacles.forEach((tent, i) => { tent.rotation.y = Math.sin(t * 0.8 + i) * 0.1; });
+  } else if (od.state === 'alert') {
+    od.alertT += dt;
+    // flush toward a brighter startled color, then begin hiding
+    const flushColor = new THREE.Color(0xff6f8a);
+    od.skinMat.color.lerpColors(od.baseColor, flushColor, Math.min(1, od.alertT * 3));
+    if (od.alertT > 0.4) {
+      od.state = 'hiding'; od.hideT = 0;
+    }
+  } else if (od.state === 'hiding') {
+    od.hideT += dt;
+    const p = Math.min(1, od.hideT / 1.0);
+    // shrink and sink into the rock crevice, blending to camouflage color
+    octopus.scale.setScalar(1.15 * (1 - p * 0.7));
+    octopus.position.y = octoRestPos.y + island.position.y - p * 0.35;
+    octopus.userData.skinMat.color.lerpColors(new THREE.Color(0xff6f8a), od.hiddenColor, p);
+    if (p >= 1) { od.state = 'hidden'; od.hideT = 0; }
+  } else if (od.state === 'hidden') {
+    od.hideT += dt;
+    if (od.hideT > 3.0) { od.state = 'emerging'; od.hideT = 0; }
+  } else if (od.state === 'emerging') {
+    od.hideT += dt;
+    const p = Math.min(1, od.hideT / 1.2);
+    octopus.scale.setScalar(1.15 * (0.3 + p * 0.7));
+    octopus.position.y = octoRestPos.y + island.position.y - (1 - p) * 0.35;
+    octopus.userData.skinMat.color.lerpColors(od.hiddenColor, od.baseColor, p);
+    if (p >= 1) { od.state = 'resting'; }
+  }
+
+  // bubbles — rise, wobble, and fade out
+  for (let i = activeBubbles.length - 1; i >= 0; i--) {
+    const b = activeBubbles[i];
+    b.life += dt;
+    b.mesh.position.y += b.speed * dt;
+    b.mesh.position.x += Math.sin(t * 4 + b.wobble) * 0.002;
+    b.mesh.position.z += Math.cos(t * 3.5 + b.wobble) * 0.002;
+    const lifeRatio = b.life / b.maxLife;
+    b.mesh.material.opacity = 0.55 * (1 - lifeRatio);
+    if (b.life > b.maxLife) {
+      bubbleGroup.remove(b.mesh);
+      activeBubbles.splice(i, 1);
+    }
+  }
+
+  updateCamera();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    const l = document.getElementById('loading');
+    l.style.opacity = '0';
+    setTimeout(() => l.style.display = 'none', 800);
+  }, 500);
+});
+</script>
+
+</body>
+</html>

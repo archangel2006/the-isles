@@ -1,0 +1,858 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Desert — A Floating Diorama</title>
+<style>
+  :root {
+    --bg-a: #ffe9c2;
+    --bg-b: #f0b878;
+    --ink: #3a2814;
+    --muted: #9a7a52;
+    --accent: #c1552f;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: linear-gradient(180deg, var(--bg-a) 0%, var(--bg-b) 100%);
+    color: var(--ink);
+    font-family: 'Georgia', 'Times New Roman', serif;
+    overflow: hidden;
+    height: 100%; width: 100%;
+  }
+  #canvas-wrap { position: fixed; inset: 0; z-index: 1; cursor: grab; }
+  #canvas-wrap.grabbing { cursor: grabbing; }
+  canvas { display: block; }
+
+  #hud {
+    position: fixed; inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    padding: 5vh 6vw;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .eyebrow {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+    font-weight: 700;
+  }
+  h1 {
+    font-size: clamp(2.2rem, 5.5vw, 3.8rem);
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .top p {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14.5px;
+    color: var(--muted);
+    max-width: 36ch;
+    margin-top: 14px;
+    line-height: 1.6;
+  }
+  .bottom { display: flex; align-items: flex-end; justify-content: space-between; }
+  .legend {
+    display: flex;
+    gap: 26px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #visit-counter {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    color: var(--ink);
+    background: rgba(255,255,255,0.45);
+    backdrop-filter: blur(10px);
+    padding: 10px 18px;
+    border-radius: 100px;
+    pointer-events: auto;
+  }
+  #toast {
+    position: fixed;
+    bottom: 13vh; left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-style: italic;
+    font-size: 15px;
+    color: var(--ink);
+    background: rgba(255,255,255,0.55);
+    backdrop-filter: blur(10px);
+    padding: 10px 22px;
+    border-radius: 100px;
+    opacity: 0;
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    z-index: 6;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #loading {
+    position: fixed; inset: 0;
+    background: var(--bg-a);
+    z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--muted);
+    transition: opacity 0.8s;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">Warming the Sand</div>
+<div id="canvas-wrap"></div>
+
+<div id="hud">
+  <div class="top">
+    <div class="eyebrow">A Floating Diorama</div>
+    <h1>Desert</h1>
+    <p>One small dune, unmoored. Drag to orbit, scroll to lean in, click the oasis to draw the fennec fox for a drink.</p>
+  </div>
+  <div class="bottom">
+    <div class="legend">
+      <div>Drag · Orbit</div>
+      <div>Scroll · Zoom</div>
+      <div>Click Oasis · Give Water</div>
+      <div>Click Camel · Walk</div>
+    </div>
+    <div id="visit-counter">Visits: <span id="visit-count">0</span></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+// ================= PALETTE =================
+const PALETTE = {
+  sandTop: 0xe8c088,
+  sandShade: 0xd0a468,
+  sandDeep: 0xb8874a,
+  rockDark: 0x8a5c34,
+  rock: 0xa8764a,
+  oasisWater: 0x3fa8a0,
+  oasisWaterDeep: 0x1f6b68,
+  palmTrunk: 0x6b4a30,
+  palmLeaf: 0x5c8a3f,
+  palmLeafLight: 0x7aa856,
+  cactusGreen: 0x4f8a5c,
+  cactusGreenDark: 0x3a6b45,
+  cactusFlower: 0xe8503f,
+  foxTan: 0xe8c49a,
+  foxTanDark: 0xc99a68,
+  foxEarInner: 0xf0d8b8,
+  camelTan: 0xd8b378,
+  camelTanDark: 0xb8925a,
+  bg: 0xf5cc94,
+};
+
+// ================= SCENE / CAMERA / RENDERER =================
+const wrap = document.getElementById('canvas-wrap');
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+let camDist = 11, camTheta = 0.5, camPhi = 1.15;
+function updateCamera() {
+  camera.position.set(
+    camDist * Math.sin(camPhi) * Math.sin(camTheta),
+    camDist * Math.cos(camPhi) + 0.5,
+    camDist * Math.sin(camPhi) * Math.cos(camTheta)
+  );
+  camera.lookAt(0, 0.6, 0);
+}
+updateCamera();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(PALETTE.bg, 1);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+wrap.appendChild(renderer.domElement);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ================= LIGHTS =================
+const ambient = new THREE.HemisphereLight(0xfff0d0, 0xb8823f, 0.85);
+scene.add(ambient);
+const key = new THREE.DirectionalLight(0xffe0a0, 1.6);
+key.position.set(5, 8, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+key.shadow.camera.left = -6; key.shadow.camera.right = 6;
+key.shadow.camera.top = 6; key.shadow.camera.bottom = -6;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0xff9a5c, 0.5);
+rim.position.set(-6, 3, -6);
+scene.add(rim);
+
+// ================= HELPERS =================
+function facetMat(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color, flatShading: true, roughness: opts.roughness ?? 0.75, metalness: opts.metalness ?? 0.02,
+    transparent: opts.transparent ?? false, opacity: opts.opacity ?? 1,
+  });
+}
+function mesh(geo, mat, castShadow = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = castShadow; m.receiveShadow = true;
+  return m;
+}
+
+// ================= FLOATING ISLAND =================
+const island = new THREE.Group();
+scene.add(island);
+
+const topShape = new THREE.CylinderGeometry(3.3, 3.5, 0.5, 8, 1);
+const topMat = facetMat(PALETTE.sandTop, { roughness: 0.9 });
+const topSlab = mesh(topShape, topMat);
+topSlab.position.y = 0.2;
+island.add(topSlab);
+
+const rockShape = new THREE.ConeGeometry(3.3, 4.0, 8, 1);
+const rockMat = facetMat(PALETTE.rockDark, { roughness: 0.85 });
+const rock = mesh(rockShape, rockMat);
+rock.rotation.y = Math.PI / 8;
+rock.position.y = -2.0;
+island.add(rock);
+
+const ringShape = new THREE.CylinderGeometry(3.4, 3.3, 0.28, 8, 1);
+const ringMat = facetMat(PALETTE.rock, { roughness: 0.75 });
+const ring = mesh(ringShape, ringMat);
+ring.position.y = -0.14;
+island.add(ring);
+
+// dunes — layered rounded mounds for depth
+function dune(x, z, s, color) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(color, { roughness: 0.9 });
+  const d = mesh(g, m);
+  d.scale.set(1, 0.4, 1);
+  d.position.set(x, 0.46 + s * 0.16, z);
+  d.rotation.y = Math.random() * Math.PI;
+  island.add(d);
+}
+dune(-1.8, -1.6, 0.6, PALETTE.sandShade);
+dune(2.0, -1.2, 0.5, PALETTE.sandDeep);
+dune(-2.3, 1.4, 0.45, PALETTE.sandShade);
+dune(1.4, 1.9, 0.4, PALETTE.sandDeep);
+
+// ================= OASIS =================
+const oasisGeo = new THREE.CylinderGeometry(0.85, 0.85, 0.06, 20);
+const oasisMat = new THREE.MeshStandardMaterial({ color: PALETTE.oasisWater, roughness: 0.15, metalness: 0.25, flatShading: true });
+const oasis = mesh(oasisGeo, oasisMat);
+oasis.position.set(0.2, 0.475, 0.2);
+island.add(oasis);
+const oasisDeepGeo = new THREE.CylinderGeometry(0.45, 0.45, 0.02, 20);
+const oasisDeepMat = new THREE.MeshStandardMaterial({ color: PALETTE.oasisWaterDeep, roughness: 0.2, transparent: true, opacity: 0.7 });
+const oasisDeep = mesh(oasisDeepGeo, oasisDeepMat, false);
+oasisDeep.position.set(0.2, 0.52, 0.2);
+island.add(oasisDeep);
+const oasisCenter = new THREE.Vector3(0.2, 0.5, 0.2);
+
+// oasis ripple pool
+const oasisRipples = [];
+function spawnOasisRipple() {
+  const g = new THREE.RingGeometry(0.05, 0.08, 24);
+  const m = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5, side: THREE.DoubleSide });
+  const ring = new THREE.Mesh(g, m);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(oasisCenter.x, 0.53, oasisCenter.z);
+  ring.userData = { t: 0 };
+  island.add(ring);
+  oasisRipples.push(ring);
+}
+
+// palm trees around the oasis
+function palmTree(x, z, h) {
+  const g = new THREE.Group();
+  const trunkMat = facetMat(PALETTE.palmTrunk, { roughness: 0.8 });
+  // curved trunk — 3 tapered segments stacking with a slight increasing lean
+  const segCount = 3;
+  let curY = 0;
+  let lean = (Math.random() - 0.5) * 0.1;
+  const segGroup = new THREE.Group();
+  for (let i = 0; i < segCount; i++) {
+    const segH = h / segCount;
+    const segR0 = 0.075 - i * 0.018;
+    const segR1 = 0.075 - (i + 1) * 0.018;
+    const seg = mesh(new THREE.CylinderGeometry(Math.max(segR1, 0.02), Math.max(segR0, 0.03), segH, 6), trunkMat);
+    seg.position.y = curY + segH / 2;
+    seg.rotation.z = lean * (i + 1);
+    segGroup.add(seg);
+    curY += segH * Math.cos(lean * (i + 1));
+    lean += (Math.random() - 0.3) * 0.06;
+  }
+  g.add(segGroup);
+
+  const crownY = curY;
+  const crownX = Math.sin(lean) * 0.1;
+
+  const leafMat = facetMat(PALETTE.palmLeaf, { roughness: 0.7 });
+  const leafMatLight = facetMat(PALETTE.palmLeafLight, { roughness: 0.7 });
+  const leafMatDark = facetMat(0x466b32, { roughness: 0.7 });
+  const frondMats = [leafMat, leafMatLight, leafMatDark];
+
+  const FROND_COUNT = 8;
+  for (let i = 0; i < FROND_COUNT; i++) {
+    const a = (i / FROND_COUNT) * Math.PI * 2 + Math.random() * 0.2;
+    const frondGroup = new THREE.Group();
+    const mat = frondMats[i % frondMats.length];
+    // each frond built from 3 shrinking flattened segments arcing downward — reads as a drooping palm leaf
+    let segLen = 0.28;
+    let segY = 0, segOut = 0.06;
+    let droop = 0.15;
+    for (let s = 0; s < 3; s++) {
+      const leaflet = mesh(new THREE.ConeGeometry(0.045 - s * 0.01, segLen, 4), mat, false);
+      leaflet.rotation.z = Math.PI / 2 - droop;
+      leaflet.position.set(segOut, segY, 0);
+      frondGroup.add(leaflet);
+      segOut += Math.cos(droop) * segLen * 0.95;
+      segY -= Math.sin(droop) * segLen * 0.95;
+      segLen *= 0.72;
+      droop += 0.45;
+    }
+    frondGroup.rotation.y = a;
+    frondGroup.position.set(crownX, crownY, 0);
+    g.add(frondGroup);
+  }
+
+  // small coconut cluster at the crown center
+  const coconutMat = facetMat(0x4a3624, { roughness: 0.7 });
+  for (let i = 0; i < 3; i++) {
+    const coco = mesh(new THREE.IcosahedronGeometry(0.045, 0), coconutMat, false);
+    const a = (i / 3) * Math.PI * 2;
+    coco.position.set(crownX + Math.cos(a) * 0.05, crownY - 0.06, Math.sin(a) * 0.05);
+    g.add(coco);
+  }
+
+  g.position.set(x, 0.45, z);
+  island.add(g);
+}
+palmTree(0.95, 0.65, 1.3);
+palmTree(-0.5, 0.55, 1.1);
+palmTree(0.35, -0.6, 1.5);
+
+// oasis rocks
+function smallRock(x, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 0);
+  const m = facetMat(PALETTE.rock, { roughness: 0.8 });
+  const r = mesh(g, m, false);
+  r.position.set(x, 0.47 + s * 0.4, z);
+  island.add(r);
+}
+smallRock(0.85, -0.35, 0.1);
+smallRock(-0.55, -0.15, 0.08);
+
+// ================= CACTI =================
+function saguaro(x, z, h) {
+  const g = new THREE.Group();
+  const m = facetMat(PALETTE.cactusGreen, { roughness: 0.7 });
+  const mDark = facetMat(PALETTE.cactusGreenDark, { roughness: 0.7 });
+  const body = mesh(new THREE.CylinderGeometry(0.09, 0.11, h, 7), m);
+  body.position.y = h / 2;
+  g.add(body);
+  [-1, 1].forEach(s => {
+    const arm = mesh(new THREE.CylinderGeometry(0.055, 0.065, h * 0.4, 6), mDark);
+    arm.position.set(s * 0.12, h * 0.55, 0);
+    arm.rotation.z = -s * 0.5;
+    g.add(arm);
+    const armUp = mesh(new THREE.CylinderGeometry(0.05, 0.06, h * 0.3, 6), m, false);
+    armUp.position.set(s * 0.19, h * 0.72, 0);
+    g.add(armUp);
+  });
+  const flowerMat = facetMat(PALETTE.cactusFlower, { roughness: 0.5 });
+  const flower = mesh(new THREE.IcosahedronGeometry(0.035, 0), flowerMat, false);
+  flower.position.y = h + 0.02;
+  g.add(flower);
+  g.position.set(x, 0.45, z);
+  island.add(g);
+}
+function barrelCactus(x, z, s, withFlower) {
+  const g = new THREE.SphereGeometry(s, 8, 6);
+  const m = facetMat(PALETTE.cactusGreenDark, { roughness: 0.7, flatShading: true });
+  const b = mesh(g, m);
+  b.scale.set(1, 0.85, 1);
+  b.position.set(x, 0.46 + s * 0.85, z);
+  island.add(b);
+  if (withFlower) {
+    const flowerMat = facetMat(PALETTE.cactusFlower, { roughness: 0.5 });
+    const flower = mesh(new THREE.IcosahedronGeometry(s * 0.4, 0), flowerMat, false);
+    flower.position.set(x, 0.46 + s * 1.65, z);
+    island.add(flower);
+  }
+}
+saguaro(-1.5, -0.4, 1.1);
+saguaro(1.8, 0.6, 0.85);
+barrelCactus(-2.1, 0.6, 0.16, false);
+barrelCactus(2.4, -0.6, 0.13, true);
+
+// a small cactus garden — cluster of little round cacti, several flowering
+const gardenCenter = { x: -1.3, z: 1.7 };
+const gardenSizes = [0.09, 0.07, 0.11, 0.06, 0.08, 0.1];
+gardenSizes.forEach((s, i) => {
+  const a = (i / gardenSizes.length) * Math.PI * 2 + Math.random() * 0.4;
+  const rad = 0.15 + Math.random() * 0.25;
+  barrelCactus(
+    gardenCenter.x + Math.cos(a) * rad,
+    gardenCenter.z + Math.sin(a) * rad,
+    s,
+    Math.random() > 0.4
+  );
+});
+
+// sparkle trail off the bottom point
+const trailGeo = new THREE.BufferGeometry();
+const TRAIL_N = 40;
+const trailPos = new Float32Array(TRAIL_N * 3);
+for (let i = 0; i < TRAIL_N; i++) {
+  const tt = i / TRAIL_N;
+  trailPos[i*3] = (Math.random() - 0.5) * 0.3 * (1 - tt);
+  trailPos[i*3+1] = -2.0 - tt * 2.2;
+  trailPos[i*3+2] = (Math.random() - 0.5) * 0.3 * (1 - tt);
+}
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+const trailMat = new THREE.PointsMaterial({ color: 0xffd89a, size: 0.045, transparent: true, opacity: 0.6 });
+const trail = new THREE.Points(trailGeo, trailMat);
+island.add(trail);
+
+// ================= FLOATING ROCKS AROUND =================
+function floatRock(x, y, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.rock, { roughness: 0.75 });
+  const r = mesh(g, m);
+  r.position.set(x, y, z);
+  r.rotation.set(Math.random(), Math.random(), Math.random());
+  r.userData = { baseY: y, phase: Math.random() * 10 };
+  scene.add(r);
+  const capMat = facetMat(PALETTE.sandShade, { roughness: 0.85 });
+  const cap = mesh(new THREE.IcosahedronGeometry(s * 0.5, 0), capMat);
+  cap.scale.set(1, 0.4, 1);
+  cap.position.set(x, y + s * 0.5, z);
+  cap.userData = { baseY: y + s * 0.5, phase: r.userData.phase };
+  scene.add(cap);
+  return [r, cap];
+}
+const floatRocks = [
+  ...floatRock(-5.4, 0.2, 1.3, 0.42),
+  ...floatRock(5.5, -0.2, 1.0, 0.38),
+  ...floatRock(0.5, -1.7, -5.5, 0.3),
+];
+
+// ================= FENNEC FOX v2 — slimmer, less blobby, belly contrast, smaller =================
+function buildFennecFox() {
+  const g = new THREE.Group();
+  const tan = facetMat(PALETTE.foxTan, { roughness: 0.55 });
+  const tanDark = facetMat(PALETTE.foxTanDark, { roughness: 0.55 });
+  const belly = facetMat(0xfaf0dc, { roughness: 0.55 });
+  const earInner = facetMat(PALETTE.foxEarInner, { roughness: 0.55 });
+  const noseMat = facetMat(0x2c221a, { roughness: 0.3 });
+  const eyeMat = facetMat(0x1a1310, { roughness: 0.15 });
+  const tailTipMat = facetMat(0x2c221a, { roughness: 0.5 });
+
+  // slim, elongated body — icosahedron stretched hard on one axis reads far less "blob"
+  const body = mesh(new THREE.IcosahedronGeometry(0.15, 1), tan);
+  body.scale.set(2.1, 0.72, 0.78);
+  body.position.y = 0.17;
+  g.add(body);
+
+  // lighter belly patch, offset lower/forward for contrast
+  const bellyMesh = mesh(new THREE.IcosahedronGeometry(0.1, 1), belly, false);
+  bellyMesh.scale.set(1.8, 0.5, 0.6);
+  bellyMesh.position.set(0.02, 0.09, 0.02);
+  g.add(bellyMesh);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.1, 1), tan);
+  head.scale.set(1, 0.95, 0.9);
+  head.position.set(0.28, 0.26, 0);
+  g.add(head);
+
+  // sharper, more pointed snout — longer and narrower for a proper fox muzzle
+  const snout = mesh(new THREE.ConeGeometry(0.05, 0.24, 6), tan);
+  snout.rotation.z = -Math.PI / 2;
+  snout.position.set(0.44, 0.21, 0);
+  g.add(snout);
+
+  const nose = mesh(new THREE.IcosahedronGeometry(0.016, 0), noseMat, false);
+  nose.position.set(0.55, 0.21, 0);
+  g.add(nose);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.015, 8, 8), eyeMat, false);
+    eye.position.set(0.32, 0.28, s * 0.065);
+    g.add(eye);
+  });
+
+  // ears — cone apex points UP (this was flipped upside-down before), base sits on the head
+  const earPositions = [];
+  [-1, 1].forEach(s => {
+    const ear = mesh(new THREE.ConeGeometry(0.05, 0.19, 4), tan);
+    ear.rotation.z = s * 0.12;
+    ear.position.set(0.24, 0.44, s * 0.08);
+    g.add(ear);
+    const earIn = mesh(new THREE.ConeGeometry(0.028, 0.13, 4), earInner, false);
+    earIn.rotation.z = s * 0.12;
+    earIn.position.set(0.245, 0.42, s * 0.08 + s * 0.005);
+    g.add(earIn);
+    earPositions.push(ear);
+  });
+
+  // slim tapered legs — thinner and more distinct than round blobs
+  const legPositions = [[0.16, 0.1], [0.16, -0.1], [-0.13, 0.09], [-0.13, -0.09]];
+  legPositions.forEach(([lx, lz]) => {
+    const leg = mesh(new THREE.CylinderGeometry(0.02, 0.028, 0.16, 5), tanDark, false);
+    leg.position.set(lx, 0.08, lz);
+    g.add(leg);
+    const paw = mesh(new THREE.IcosahedronGeometry(0.026, 0), tanDark, false);
+    paw.position.set(lx, 0.01, lz);
+    g.add(paw);
+  });
+
+  // fluffy tail with a dark tip, curved back and slightly up
+  const tail = mesh(new THREE.ConeGeometry(0.06, 0.24, 6), tanDark);
+  tail.rotation.z = Math.PI / 2.6;
+  tail.position.set(-0.24, 0.22, 0);
+  g.add(tail);
+  const tailTip = mesh(new THREE.IcosahedronGeometry(0.04, 0), tailTipMat, false);
+  tailTip.position.set(-0.36, 0.3, 0);
+  g.add(tailTip);
+
+  g.userData.head = head;
+  g.userData.ears = earPositions;
+  return g;
+}
+const foxHomes = [
+  new THREE.Vector3(-0.6, 0.5, -1.4),
+  new THREE.Vector3(-1.0, 0.5, -0.7),
+];
+const foxes = foxHomes.map((home, i) => {
+  const f = buildFennecFox();
+  f.scale.setScalar(0.7 + Math.random() * 0.06); // kept notably smaller than before, slight size variety
+  f.position.copy(home);
+  Object.assign(f.userData, {
+    state: 'idle', target: null,
+    homeAngle: Math.random() * Math.PI * 2,
+    wanderPhase: Math.random() * 10,
+    home,
+  });
+  scene.add(f);
+  return f;
+});
+
+// ================= CAMEL — now with a harness/blanket for contrast, and clickable to walk =================
+function buildCamel() {
+  const g = new THREE.Group();
+  const tan = facetMat(PALETTE.camelTan, { roughness: 0.65 });
+  const tanDark = facetMat(PALETTE.camelTanDark, { roughness: 0.65 });
+  const eyeMat = facetMat(0x1a1310, { roughness: 0.15 });
+
+  const body = mesh(new THREE.IcosahedronGeometry(0.34, 1), tan);
+  body.scale.set(1.7, 0.9, 0.95);
+  body.position.y = 0.32;
+  g.add(body);
+
+  const hump = mesh(new THREE.IcosahedronGeometry(0.18, 1), tan);
+  hump.scale.set(1, 1.1, 0.8);
+  hump.position.set(0.05, 0.58, 0);
+  g.add(hump);
+
+  const neck = mesh(new THREE.IcosahedronGeometry(0.13, 1), tan);
+  neck.scale.set(0.8, 1.6, 0.8);
+  neck.position.set(0.42, 0.55, 0);
+  neck.rotation.z = -0.4;
+  g.add(neck);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.11, 1), tan);
+  head.position.set(0.58, 0.78, 0);
+  g.add(head);
+
+  const snout = mesh(new THREE.IcosahedronGeometry(0.055, 0), tanDark, false);
+  snout.scale.set(1.5, 0.7, 0.7);
+  snout.position.set(0.68, 0.74, 0);
+  g.add(snout);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.016, 8, 8), eyeMat, false);
+    eye.position.set(0.61, 0.82, s * 0.07);
+    g.add(eye);
+  });
+
+  [-1, 1].forEach(s => {
+    const ear = mesh(new THREE.IcosahedronGeometry(0.035, 0), tanDark, false);
+    ear.position.set(0.55, 0.88, s * 0.08);
+    g.add(ear);
+  });
+
+  const legPositions = [[0.28, 0.16], [0.28, -0.16], [-0.22, 0.15], [-0.22, -0.15]];
+  legPositions.forEach(([lx, lz]) => {
+    const leg = mesh(new THREE.IcosahedronGeometry(0.07, 0), tanDark, false);
+    leg.scale.set(0.9, 0.5, 0.9);
+    leg.position.set(lx, 0.06, lz);
+    g.add(leg);
+  });
+
+  const tail = mesh(new THREE.CylinderGeometry(0.02, 0.03, 0.2, 5), tanDark, false);
+  tail.rotation.z = Math.PI / 2.5;
+  tail.position.set(-0.42, 0.34, 0);
+  g.add(tail);
+
+  // saddle blanket — draped over the hump, a bold contrasting color with a trim stripe
+  const blanketMat = facetMat(0xc1552f, { roughness: 0.6 });
+  const blanketTrimMat = facetMat(0xe8c23c, { roughness: 0.5 });
+  const blanket = mesh(new THREE.BoxGeometry(0.32, 0.05, 0.42), blanketMat, false);
+  blanket.position.set(0.02, 0.66, 0);
+  blanket.rotation.z = -0.05;
+  g.add(blanket);
+  [-1, 1].forEach(s => {
+    const trim = mesh(new THREE.BoxGeometry(0.33, 0.015, 0.05), blanketTrimMat, false);
+    trim.position.set(0.02, 0.635, s * 0.19);
+    g.add(trim);
+  });
+  // tassels hanging off the blanket edge
+  for (let i = 0; i < 4; i++) {
+    const tassel = mesh(new THREE.ConeGeometry(0.012, 0.06, 4), blanketTrimMat, false);
+    tassel.position.set(-0.1 + i * 0.08, 0.6, 0.2);
+    g.add(tassel);
+  }
+
+  // harness — thin straps around the neck and chest, a contrasting deep teal with small bead accents
+  const harnessMat = facetMat(0x2f6b6b, { roughness: 0.5 });
+  const beadMat = facetMat(0xe8c23c, { roughness: 0.4 });
+  const neckStrap = mesh(new THREE.TorusGeometry(0.13, 0.012, 6, 12), harnessMat, false);
+  neckStrap.position.set(0.42, 0.55, 0);
+  neckStrap.rotation.y = Math.PI / 2;
+  neckStrap.rotation.x = -0.4;
+  g.add(neckStrap);
+  const chestStrap = mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.5, 6), harnessMat, false);
+  chestStrap.rotation.z = Math.PI / 2.6;
+  chestStrap.position.set(0.2, 0.35, 0);
+  g.add(chestStrap);
+  for (let i = 0; i < 3; i++) {
+    const bead = mesh(new THREE.IcosahedronGeometry(0.015, 0), beadMat, false);
+    bead.position.set(0.42 + Math.cos(i * 1.2) * 0.13, 0.55 + Math.sin(i * 1.2) * 0.13, 0.1);
+    g.add(bead);
+  }
+
+  return g;
+}
+const camel = buildCamel();
+camel.scale.setScalar(0.85);
+const camelHome = new THREE.Vector3(1.6, 0.5, -1.8);
+camel.position.copy(camelHome);
+camel.rotation.y = -0.6;
+Object.assign(camel.userData, { state: 'idle', target: null, wanderPhase: Math.random() * 10 });
+scene.add(camel);
+
+// ================= HEAT SHIMMER (rising warm motes) =================
+const SHIMMER_COUNT = 90;
+const shimmerGeo = new THREE.BufferGeometry();
+const shimmerPos = new Float32Array(SHIMMER_COUNT * 3);
+const shimmerSpeed = new Float32Array(SHIMMER_COUNT);
+const shimmerPhase = new Float32Array(SHIMMER_COUNT);
+for (let i = 0; i < SHIMMER_COUNT; i++) {
+  const ang = Math.random() * Math.PI * 2;
+  const rad = Math.random() * 3.0;
+  shimmerPos[i*3] = Math.cos(ang) * rad;
+  shimmerPos[i*3+1] = 0.5 + Math.random() * 1.5;
+  shimmerPos[i*3+2] = Math.sin(ang) * rad;
+  shimmerSpeed[i] = 0.15 + Math.random() * 0.2;
+  shimmerPhase[i] = Math.random() * 10;
+}
+shimmerGeo.setAttribute('position', new THREE.BufferAttribute(shimmerPos, 3));
+const shimmerMat = new THREE.PointsMaterial({ color: 0xffe0a0, size: 0.03, transparent: true, opacity: 0.35 });
+const shimmer = new THREE.Points(shimmerGeo, shimmerMat);
+island.add(shimmer);
+
+// ================= INTERACTION =================
+let isDragging = false, lastX = 0, lastY = 0, dragged = false;
+wrap.addEventListener('mousedown', (e) => {
+  isDragging = true; dragged = false; lastX = e.clientX; lastY = e.clientY;
+  wrap.classList.add('grabbing');
+});
+window.addEventListener('mouseup', () => { isDragging = false; wrap.classList.remove('grabbing'); });
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
+  camTheta -= dx * 0.005;
+  camPhi = Math.min(1.5, Math.max(0.55, camPhi - dy * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+  updateCamera();
+});
+wrap.addEventListener('wheel', (e) => {
+  camDist = Math.min(16, Math.max(5.5, camDist + e.deltaY * 0.005));
+  updateCamera();
+}, { passive: true });
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+wrap.addEventListener('click', (e) => {
+  if (dragged) return;
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+
+  const camelHits = raycaster.intersectObject(camel, true);
+  if (camelHits.length) {
+    if (camel.userData.state === 'idle') {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = 0.5 + Math.random() * 0.9;
+      camel.userData.target = new THREE.Vector3(
+        camelHome.x + Math.cos(ang) * rad,
+        0.5,
+        camelHome.z + Math.sin(ang) * rad
+      );
+      camel.userData.state = 'walking';
+      showToast('The camel rises and plods on.');
+    }
+    return;
+  }
+
+  const hits = raycaster.intersectObject(oasis);
+  if (hits.length) {
+    spawnOasisRipple();
+    showToast('The water catches the light.');
+    const idleFox = foxes.find(f => f.userData.state === 'idle');
+    if (idleFox) idleFox.userData.state = 'walking';
+  }
+});
+
+let toastTimeout;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => el.classList.remove('show'), 2600);
+}
+let visitCount = 0;
+function incrementVisit() {
+  visitCount++;
+  document.getElementById('visit-count').textContent = visitCount;
+}
+
+// ================= LOOP =================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.getElapsedTime();
+
+  island.rotation.y = Math.sin(t * 0.08) * 0.02;
+  island.position.y = Math.sin(t * 0.35) * 0.08;
+
+  floatRocks.forEach(r => {
+    r.position.y = r.userData.baseY + Math.sin(t * 0.6 + r.userData.phase) * 0.15;
+    r.rotation.y += dt * 0.04;
+  });
+
+  // oasis ripples
+  for (let i = oasisRipples.length - 1; i >= 0; i--) {
+    const r = oasisRipples[i];
+    r.userData.t += dt;
+    const s = 1 + r.userData.t * 4;
+    r.scale.set(s, s, s);
+    r.material.opacity = Math.max(0, 0.5 - r.userData.t * 0.5);
+    if (r.userData.t > 1.0) { island.remove(r); oasisRipples.splice(i, 1); }
+  }
+
+  // heat shimmer — slow upward drift with a sine sway, loop back to ground
+  const sp = shimmerGeo.attributes.position.array;
+  for (let i = 0; i < SHIMMER_COUNT; i++) {
+    sp[i*3+1] += shimmerSpeed[i] * dt;
+    sp[i*3] += Math.sin(t * 1.5 + shimmerPhase[i]) * 0.0015;
+    if (sp[i*3+1] > 2.2) sp[i*3+1] = 0.4;
+  }
+  shimmerGeo.attributes.position.needsUpdate = true;
+
+  // camel — idle breathing, or walking to a clicked destination
+  const cd = camel.userData;
+  camel.children[0].scale.y = 0.9 + Math.sin(t * 0.8) * 0.015;
+  if (cd.state === 'idle') {
+    // gentle settle back toward home if it's wandered
+    camel.position.x += (camelHome.x - camel.position.x) * dt * 0.05;
+    camel.position.z += (camelHome.z - camel.position.z) * dt * 0.05;
+  } else if (cd.state === 'walking' && cd.target) {
+    const dir = new THREE.Vector3(cd.target.x - camel.position.x, 0, cd.target.z - camel.position.z);
+    const dist = dir.length();
+    if (dist < 0.15) {
+      cd.state = 'idle';
+      cd.target = null;
+    } else {
+      dir.normalize();
+      camel.position.x += dir.x * dt * 0.5;
+      camel.position.z += dir.z * dt * 0.5;
+      camel.rotation.y = Math.atan2(dir.x, dir.z);
+      camel.position.y = island.position.y + 0.5 + Math.abs(Math.sin(t * 5)) * 0.02;
+    }
+  }
+
+  // fox behavior — loop over both foxes
+  foxes.forEach(f => {
+    const fd = f.userData;
+    if (fd.state === 'idle') {
+      const orbitAng = t * 0.3 + fd.wanderPhase;
+      const desiredX = fd.home.x + Math.cos(orbitAng) * 0.32;
+      const desiredZ = fd.home.z + Math.sin(orbitAng) * 0.32;
+      f.position.x += (desiredX - f.position.x) * dt * 0.6;
+      f.position.z += (desiredZ - f.position.z) * dt * 0.6;
+      f.position.y = island.position.y + 0.5;
+      if (fd.ears) fd.ears.forEach((ear, i) => { ear.rotation.z = (i === 0 ? -1 : 1) * 0.12 + Math.sin(t * 2 + i + fd.wanderPhase) * 0.06; });
+    } else if (fd.state === 'walking') {
+      const dir = new THREE.Vector3(oasisCenter.x - f.position.x + 0.35, 0, oasisCenter.z - f.position.z);
+      const dist = dir.length();
+      if (dist < 0.15) {
+        fd.state = 'drinking'; fd.drinkT = 0;
+      } else {
+        dir.normalize();
+        f.position.x += dir.x * dt * 0.8;
+        f.position.z += dir.z * dt * 0.8;
+        f.rotation.y = Math.atan2(dir.x, dir.z);
+        f.position.y = island.position.y + 0.5 + Math.abs(Math.sin(t * 9)) * 0.015;
+      }
+    } else if (fd.state === 'drinking') {
+      fd.drinkT += dt;
+      if (fd.head) fd.head.rotation.x = Math.abs(Math.sin(t * 6)) * 0.3;
+      if (fd.drinkT > 1.2) {
+        if (fd.head) fd.head.rotation.x = 0;
+        incrementVisit();
+        showToast('The fennec fox drinks, ears turning at every sound.');
+        fd.state = 'idle';
+      }
+    }
+  });
+
+  updateCamera();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    const l = document.getElementById('loading');
+    l.style.opacity = '0';
+    setTimeout(() => l.style.display = 'none', 800);
+  }, 500);
+});
+</script>
+
+</body>
+</html>

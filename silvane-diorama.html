@@ -1,0 +1,1065 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Silvane — A Floating Diorama</title>
+<style>
+  :root {
+    --bg-a: #6a7290;
+    --bg-b: #3a3f5c;
+    --ink: #eae6f0;
+    --muted: #a8a4c0;
+    --accent: #e8a23c;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    background: linear-gradient(180deg, var(--bg-a) 0%, var(--bg-b) 100%);
+    color: var(--ink);
+    font-family: 'Georgia', 'Times New Roman', serif;
+    overflow: hidden;
+    height: 100%; width: 100%;
+  }
+  #canvas-wrap { position: fixed; inset: 0; z-index: 1; cursor: grab; }
+  #canvas-wrap.grabbing { cursor: grabbing; }
+  canvas { display: block; }
+
+  #hud {
+    position: fixed; inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    padding: 5vh 6vw;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .eyebrow {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+    font-weight: 700;
+  }
+  h1 {
+    font-size: clamp(2.2rem, 5.5vw, 3.8rem);
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .top p {
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14.5px;
+    color: var(--muted);
+    max-width: 36ch;
+    margin-top: 14px;
+    line-height: 1.6;
+  }
+  .bottom { display: flex; align-items: flex-end; justify-content: space-between; }
+  .legend {
+    display: flex;
+    gap: 26px;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 10px;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  #toast {
+    position: fixed;
+    bottom: 13vh; left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-style: italic;
+    font-size: 15px;
+    color: var(--ink);
+    background: rgba(255,255,255,0.12);
+    backdrop-filter: blur(10px);
+    padding: 10px 22px;
+    border-radius: 100px;
+    opacity: 0;
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    z-index: 6;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  #loading {
+    position: fixed; inset: 0;
+    background: var(--bg-b);
+    z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'Helvetica Neue', Arial, sans-serif;
+    font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--muted);
+    transition: opacity 0.8s;
+  }
+</style>
+</head>
+<body>
+
+<div id="loading">Settling Into Dusk</div>
+<div id="canvas-wrap"></div>
+
+<div id="hud">
+  <div class="top">
+    <div class="eyebrow">A Floating Diorama</div>
+    <h1>Silvane</h1>
+    <p>One small woodland, unmoored. Drag to orbit, scroll to lean in, click a deer and see it go.</p>
+  </div>
+  <div class="bottom">
+    <div class="legend">
+      <div>Drag · Orbit</div>
+      <div>Scroll · Zoom</div>
+      <div>Click Deer · Watch It Skip</div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+
+<script>
+// ================= PALETTE =================
+const PALETTE = {
+  grassTop: 0x5a6b52,
+  grassShade: 0x465440,
+  earthDark: 0x3a3428,
+  rockDark: 0x484238,
+  rock: 0x5c564a,
+  mossRock: 0x5a6b48,
+  pineDark: 0x2f4a3f,
+  pineMid: 0x3f6352,
+  pineLight: 0x517a63,
+  trunkBrown: 0x4a3a2c,
+  logBrown: 0x5c4630,
+  logBrownDark: 0x3f3220,
+  streamWater: 0x4f7a8a,
+  denRock: 0x4a4438,
+  denDark: 0x18140f,
+  pathDirt: 0x6b5a44,
+  deerTan: 0xa8825c,
+  deerTanDark: 0x8a6a48,
+  deerBelly: 0xd8c4a0,
+  fawnTan: 0xc9a578,
+  bearBrown: 0x5c4530,
+  bearBrownDark: 0x3f2f20,
+  bg: 0x454a68,
+};
+
+// ================= SCENE / CAMERA / RENDERER =================
+const wrap = document.getElementById('canvas-wrap');
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(PALETTE.bg, 0.035);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+let camDist = 15.5, camTheta = 0.5, camPhi = 1.1;
+function updateCamera() {
+  camera.position.set(
+    camDist * Math.sin(camPhi) * Math.sin(camTheta),
+    camDist * Math.cos(camPhi) + 0.6,
+    camDist * Math.sin(camPhi) * Math.cos(camTheta)
+  );
+  camera.lookAt(0, 0.6, 0);
+}
+updateCamera();
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(PALETTE.bg, 1);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+wrap.appendChild(renderer.domElement);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ================= LIGHTS (dusk, cool with one warm accent) =================
+const ambient = new THREE.HemisphereLight(0x8a94c0, 0x2f2a3a, 0.6);
+scene.add(ambient);
+const key = new THREE.DirectionalLight(0xaab0e0, 0.75);
+key.position.set(4, 8, 3);
+key.castShadow = true;
+key.shadow.mapSize.set(1024, 1024);
+key.shadow.camera.left = -6; key.shadow.camera.right = 6;
+key.shadow.camera.top = 6; key.shadow.camera.bottom = -6;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x6f7ac9, 0.4);
+rim.position.set(-6, 3, -6);
+scene.add(rim);
+// the one warm accent — a lantern-like glow near the clearing
+const lanternLight = new THREE.PointLight(0xffb870, 0.9, 3.5);
+lanternLight.position.set(0.3, 0.8, 0.5);
+scene.add(lanternLight);
+
+// ================= HELPERS =================
+function facetMat(color, opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color, flatShading: true, roughness: opts.roughness ?? 0.75, metalness: opts.metalness ?? 0.02,
+    transparent: opts.transparent ?? false, opacity: opts.opacity ?? 1,
+    emissive: opts.emissive ?? 0x000000, emissiveIntensity: opts.emissiveIntensity ?? 0,
+  });
+}
+function mesh(geo, mat, castShadow = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = castShadow; m.receiveShadow = true;
+  return m;
+}
+
+// ================= FLOATING ISLAND =================
+const island = new THREE.Group();
+scene.add(island);
+
+const topShape = new THREE.CylinderGeometry(4.4, 4.7, 0.55, 8, 1);
+const topMat = facetMat(PALETTE.grassTop, { roughness: 0.85 });
+const topSlab = mesh(topShape, topMat);
+topSlab.position.y = 0.2;
+island.add(topSlab);
+
+const rockShape = new THREE.ConeGeometry(4.4, 5.2, 8, 1);
+const rockMat = facetMat(PALETTE.earthDark, { roughness: 0.85 });
+const rock = mesh(rockShape, rockMat);
+rock.rotation.y = Math.PI / 8;
+rock.position.y = -2.6;
+island.add(rock);
+
+const ringShape = new THREE.CylinderGeometry(4.5, 4.4, 0.3, 8, 1);
+const ringMat = facetMat(PALETTE.rock, { roughness: 0.75 });
+const ring = mesh(ringShape, ringMat);
+ring.position.y = -0.14;
+island.add(ring);
+
+// grass texture mounds
+function grassMound(x, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.grassShade, { roughness: 0.85 });
+  const d = mesh(g, m);
+  d.scale.set(1, 0.35, 1);
+  d.position.set(x, 0.46 + s * 0.15, z);
+  island.add(d);
+}
+grassMound(1.6, 1.9, 0.35);
+grassMound(-2.4, 0.5, 0.3);
+
+// ================= MOSSY STONES =================
+function mossyStone(x, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 0);
+  const m = facetMat(PALETTE.rock, { roughness: 0.85 });
+  const stone = mesh(g, m);
+  stone.scale.set(1.2, 0.7, 1);
+  stone.position.set(x, 0.46 + s * 0.32, z);
+  stone.rotation.y = Math.random() * Math.PI;
+  island.add(stone);
+  const mossMat = facetMat(PALETTE.mossRock, { roughness: 0.8 });
+  const moss = mesh(new THREE.IcosahedronGeometry(s * 0.6, 0), mossMat, false);
+  moss.scale.set(1.1, 0.35, 0.9);
+  moss.position.set(x, 0.46 + s * 0.58, z);
+  island.add(moss);
+}
+mossyStone(1.9, -0.6, 0.24);
+mossyStone(2.1, -0.9, 0.15);
+mossyStone(-1.4, 1.6, 0.18);
+
+// ================= FALLEN LOG =================
+const logGroup = new THREE.Group();
+const logMat = facetMat(PALETTE.logBrown, { roughness: 0.8 });
+const logEndMat = facetMat(PALETTE.logBrownDark, { roughness: 0.7 });
+const logBody = mesh(new THREE.CylinderGeometry(0.13, 0.15, 1.3, 7), logMat);
+logBody.rotation.z = Math.PI / 2;
+logGroup.add(logBody);
+[-1, 1].forEach(s => {
+  const ring = mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.02, 7), logEndMat, false);
+  ring.rotation.z = Math.PI / 2;
+  ring.position.x = s * 0.65;
+  logGroup.add(ring);
+});
+const logMoss = mesh(new THREE.IcosahedronGeometry(0.08, 0), facetMat(PALETTE.mossRock, { roughness: 0.8 }), false);
+logMoss.scale.set(1.4, 0.3, 0.9);
+logMoss.position.set(-0.2, 0.13, 0);
+logGroup.add(logMoss);
+logGroup.position.set(-1.7, 0.62, -0.3);
+logGroup.rotation.y = 0.5;
+island.add(logGroup);
+
+// ================= STREAM (winding path of water segments) =================
+const streamPoints = [
+  { x: 2.6, z: 0.8 }, { x: 1.8, z: 0.5 }, { x: 1.0, z: 0.3 },
+  { x: 0.2, z: 0.5 }, { x: -0.6, z: 0.9 }, { x: -1.4, z: 1.3 },
+];
+const streamMat = new THREE.MeshStandardMaterial({ color: PALETTE.streamWater, roughness: 0.15, metalness: 0.3, flatShading: true });
+const streamMeshes = [];
+for (let i = 0; i < streamPoints.length - 1; i++) {
+  const a = streamPoints[i], b = streamPoints[i + 1];
+  const len = Math.hypot(b.x - a.x, b.z - a.z);
+  const seg = mesh(new THREE.BoxGeometry(len + 0.15, 0.04, 0.34), streamMat, false);
+  seg.position.set((a.x + b.x) / 2, 0.47, (a.z + b.z) / 2);
+  seg.rotation.y = -Math.atan2(b.z - a.z, b.x - a.x);
+  island.add(seg);
+  streamMeshes.push(seg);
+}
+const poolGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.04, 16);
+const pool = mesh(poolGeo, streamMat);
+pool.position.set(-1.5, 0.47, 1.4);
+island.add(pool);
+streamMeshes.push(pool);
+
+// ================= PINE TREES =================
+function pineTree(x, z, h) {
+  const g = new THREE.Group();
+  const trunkMat = facetMat(PALETTE.trunkBrown, { roughness: 0.8 });
+  const trunk = mesh(new THREE.CylinderGeometry(0.05, 0.07, h * 0.25, 6), trunkMat);
+  trunk.position.y = h * 0.125;
+  g.add(trunk);
+
+  const tierColors = [PALETTE.pineDark, PALETTE.pineMid, PALETTE.pineLight];
+  const tierCount = 4;
+  for (let i = 0; i < tierCount; i++) {
+    const tierH = h * 0.75 * (1 - i * 0.12);
+    const tierR = (0.42 - i * 0.07) * (h / 1.4);
+    const tier = mesh(new THREE.ConeGeometry(tierR, tierH * 0.4, 7), facetMat(tierColors[i % 3], { roughness: 0.75 }));
+    tier.position.y = h * 0.28 + i * (h * 0.17);
+    g.add(tier);
+  }
+  g.position.set(x, 0.45, z);
+  island.add(g);
+}
+pineTree(2.0, 1.7, 1.6);
+pineTree(2.4, 1.2, 1.2);
+pineTree(-2.0, -1.4, 1.8);
+pineTree(-1.6, -1.9, 1.3);
+pineTree(0.5, -2.2, 1.5);
+pineTree(-0.4, -2.5, 1.1);
+pineTree(2.7, -1.5, 1.4);
+
+// ================= DEN (rocky mound with dark opening) — enlarged =================
+const denGroup = new THREE.Group();
+const denMoundMat = facetMat(PALETTE.denRock, { roughness: 0.85 });
+const denMound = mesh(new THREE.IcosahedronGeometry(0.85, 1), denMoundMat);
+denMound.scale.set(1.3, 0.8, 1.1);
+denMound.position.y = 0.3;
+denGroup.add(denMound);
+[[0.42, 0.55, 0.22], [-0.35, 0.62, -0.16], [0.12, 0.7, 0.4]].forEach(([mx, my, mz]) => {
+  const patch = mesh(new THREE.IcosahedronGeometry(0.22, 0), facetMat(PALETTE.mossRock, { roughness: 0.8 }), false);
+  patch.scale.set(1, 0.3, 1);
+  patch.position.set(mx, my, mz);
+  denGroup.add(patch);
+});
+
+// entrance — positioned at the mound's actual outer surface near ground level, opening disc
+// correctly facing outward along +X, and the whole den moved close to the island's center below
+// so the doorway and threshold sit fully on the grass instead of hanging off the island's edge.
+const denOpeningMat = facetMat(PALETTE.denDark, { roughness: 0.9 });
+const denOpening = mesh(new THREE.CylinderGeometry(0.26, 0.29, 0.15, 12), denOpeningMat, false);
+denOpening.rotation.z = Math.PI / 2;
+denOpening.position.set(0.95, 0.19, 0);
+denGroup.add(denOpening);
+
+// entrance frame — two posts + a lintel beam, in a lighter tone so it actually contrasts with the dark mound
+const frameMat = facetMat(0xc9b892, { roughness: 0.7 });
+[-1, 1].forEach(s => {
+  const post = mesh(new THREE.CylinderGeometry(0.05, 0.065, 0.34, 6), frameMat);
+  post.position.set(0.98, 0.17, s * 0.29);
+  denGroup.add(post);
+});
+const lintel = mesh(new THREE.BoxGeometry(0.13, 0.1, 0.7), frameMat);
+lintel.position.set(1.0, 0.36, 0);
+denGroup.add(lintel);
+// small threshold slab at the base, worn flat by use
+const threshold = mesh(new THREE.CylinderGeometry(0.32, 0.34, 0.05, 10), facetMat(PALETTE.pathDirt, { roughness: 0.85 }), false);
+threshold.position.set(1.15, 0.03, 0);
+denGroup.add(threshold);
+
+denGroup.position.set(-1.6, 0.46, 0.7);
+denGroup.rotation.y = -0.4;
+island.add(denGroup);
+const denEntrance = new THREE.Vector3(-1.6 + Math.cos(-0.4) * 1.15, 0.5, 0.7 + Math.sin(-0.4) * 1.15);
+
+const pathMat = facetMat(PALETTE.pathDirt, { roughness: 0.9 });
+for (let i = 0; i < 5; i++) {
+  const t = i / 4;
+  const px = denEntrance.x + (0.6 - denEntrance.x) * t * 0.6;
+  const pz = denEntrance.z + (0.3 - denEntrance.z) * t * 0.6;
+  const patch = mesh(new THREE.CylinderGeometry(0.12 - t * 0.03, 0.12 - t * 0.03, 0.02, 8), pathMat, false);
+  patch.position.set(px, 0.475, pz);
+  island.add(patch);
+}
+
+// sparkle trail off the bottom point
+const trailGeo = new THREE.BufferGeometry();
+const TRAIL_N = 40;
+const trailPos = new Float32Array(TRAIL_N * 3);
+for (let i = 0; i < TRAIL_N; i++) {
+  const tt = i / TRAIL_N;
+  trailPos[i*3] = (Math.random() - 0.5) * 0.3 * (1 - tt);
+  trailPos[i*3+1] = -2.6 - tt * 2.6;
+  trailPos[i*3+2] = (Math.random() - 0.5) * 0.3 * (1 - tt);
+}
+trailGeo.setAttribute('position', new THREE.BufferAttribute(trailPos, 3));
+const trailMat = new THREE.PointsMaterial({ color: 0xa0b0e0, size: 0.045, transparent: true, opacity: 0.6 });
+const trail = new THREE.Points(trailGeo, trailMat);
+island.add(trail);
+
+// ================= FLOATING ROCKS AROUND =================
+function floatRock(x, y, z, s) {
+  const g = new THREE.IcosahedronGeometry(s, 1);
+  const m = facetMat(PALETTE.rock, { roughness: 0.75 });
+  const r = mesh(g, m);
+  r.position.set(x, y, z);
+  r.rotation.set(Math.random(), Math.random(), Math.random());
+  r.userData = { baseY: y, phase: Math.random() * 10 };
+  scene.add(r);
+  const capMat = facetMat(PALETTE.grassShade, { roughness: 0.85 });
+  const cap = mesh(new THREE.IcosahedronGeometry(s * 0.55, 0), capMat);
+  cap.scale.set(1, 0.5, 1);
+  cap.position.set(x, y + s * 0.55, z);
+  cap.userData = { baseY: y + s * 0.55, phase: r.userData.phase };
+  scene.add(cap);
+  return [r, cap];
+}
+const floatRocks = [
+  ...floatRock(-6.8, 0.2, 1.6, 0.5),
+  ...floatRock(6.9, -0.2, 1.2, 0.45),
+  ...floatRock(0.6, -1.9, -7.0, 0.36),
+];
+
+// ================= DEER (faceted, with eyes, graze/alert/skip) =================
+function buildDeer(isFawn) {
+  const g = new THREE.Group();
+  const tan = facetMat(isFawn ? PALETTE.fawnTan : PALETTE.deerTan, { roughness: 0.6 });
+  const tanDark = facetMat(PALETTE.deerTanDark, { roughness: 0.6 });
+  const belly = facetMat(PALETTE.deerBelly, { roughness: 0.6 });
+  const eyeMat = facetMat(0x1a1310, { roughness: 0.15 });
+  const noseMat = facetMat(0x2c221a, { roughness: 0.3 });
+
+  const bodyScale = isFawn ? 0.6 : 1.0;
+  const body = mesh(new THREE.IcosahedronGeometry(0.22 * bodyScale, 1), tan);
+  body.scale.set(1.7, 0.9, 0.85);
+  body.position.y = 0.32 * bodyScale + 0.15;
+  g.add(body);
+
+  const bellyMesh = mesh(new THREE.IcosahedronGeometry(0.14 * bodyScale, 1), belly, false);
+  bellyMesh.scale.set(1.5, 0.55, 0.6);
+  bellyMesh.position.set(0, 0.24 * bodyScale + 0.1, 0.02);
+  g.add(bellyMesh);
+
+  const neck = mesh(new THREE.IcosahedronGeometry(0.13 * bodyScale, 1), tan);
+  neck.scale.set(0.85, 1.5, 0.8);
+  neck.position.set(0.32 * bodyScale, 0.5 * bodyScale + 0.15, 0);
+  neck.rotation.z = -0.5;
+  g.add(neck);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.11 * bodyScale, 1), tan);
+  head.position.set(0.48 * bodyScale, 0.68 * bodyScale + 0.15, 0);
+  g.add(head);
+
+  const snout = mesh(new THREE.IcosahedronGeometry(0.06 * bodyScale, 0), tanDark, false);
+  snout.scale.set(1.4, 0.7, 0.7);
+  snout.position.set(0.6 * bodyScale, 0.63 * bodyScale + 0.15, 0);
+  g.add(snout);
+
+  const nose = mesh(new THREE.IcosahedronGeometry(0.02 * bodyScale, 0), noseMat, false);
+  nose.position.set(0.69 * bodyScale, 0.62 * bodyScale + 0.15, 0);
+  g.add(nose);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.018 * bodyScale, 8, 8), eyeMat, false);
+    eye.position.set(0.52 * bodyScale, 0.72 * bodyScale + 0.15, s * 0.075 * bodyScale);
+    g.add(eye);
+  });
+
+  [-1, 1].forEach(s => {
+    const ear = mesh(new THREE.ConeGeometry(0.04 * bodyScale, 0.12 * bodyScale, 4), tan, false);
+    ear.position.set(0.42 * bodyScale, 0.82 * bodyScale + 0.15, s * 0.08 * bodyScale);
+    ear.rotation.z = s * 0.5;
+    g.add(ear);
+  });
+
+  if (!isFawn) {
+    [-1, 1].forEach(s => {
+      const antlerMat = facetMat(PALETTE.deerTanDark, { roughness: 0.5 });
+      const base = mesh(new THREE.CylinderGeometry(0.012, 0.016, 0.16, 5), antlerMat, false);
+      base.position.set(0.42, 0.98, s * 0.08);
+      base.rotation.z = s * 0.3;
+      base.rotation.x = -0.2;
+      g.add(base);
+      const branch = mesh(new THREE.CylinderGeometry(0.008, 0.012, 0.1, 5), antlerMat, false);
+      branch.position.set(0.48, 1.08, s * 0.12);
+      branch.rotation.z = s * 0.7;
+      g.add(branch);
+    });
+  }
+
+  const legPositions = isFawn
+    ? [[0.14, 0.09], [0.14, -0.09], [-0.11, 0.08], [-0.11, -0.08]]
+    : [[0.22, 0.14], [0.22, -0.14], [-0.18, 0.13], [-0.18, -0.13]];
+  const legHeight = isFawn ? 0.22 : 0.32;
+  legPositions.forEach(([lx, lz]) => {
+    const leg = mesh(new THREE.CylinderGeometry(0.022 * bodyScale, 0.03 * bodyScale, legHeight, 5), tanDark, false);
+    leg.position.set(lx, legHeight / 2, lz);
+    g.add(leg);
+  });
+
+  const tail = mesh(new THREE.IcosahedronGeometry(0.05 * bodyScale, 0), belly, false);
+  tail.position.set(-0.32 * bodyScale, 0.4 * bodyScale + 0.15, 0);
+  g.add(tail);
+
+  g.userData.head = head;
+  g.userData.neck = neck;
+  return g;
+}
+
+function randomWanderTarget(center, radius) {
+  const a = Math.random() * Math.PI * 2;
+  const r = Math.random() * radius;
+  return new THREE.Vector3(center.x + Math.cos(a) * r, 0.48, center.z + Math.sin(a) * r);
+}
+
+// tree trunk positions, so deer wander targets can avoid walking into the pine cluster
+const treePositions = [
+  { x: 2.0, z: 1.7 }, { x: 2.4, z: 1.2 }, { x: -2.0, z: -1.4 }, { x: -1.6, z: -1.9 },
+  { x: 0.5, z: -2.2 }, { x: -0.4, z: -2.5 }, { x: 2.7, z: -1.5 },
+];
+const ISLAND_SAFE_RADIUS = 3.5; // hard boundary — well inside the grass edge, accounts for the octagon's corners being closer than its flat sides
+
+// solid obstacles with real collision radii — used for actual path steering, not just target selection.
+// Target-avoidance alone only kept animals from *choosing* a spot inside an obstacle; it did nothing
+// to stop the straight-line walk to a valid target from cutting through one along the way.
+const obstacles = [
+  ...treePositions.map(tp => ({ x: tp.x, z: tp.z, r: 0.5 })),
+  { x: denGroup.position.x, z: denGroup.position.z, r: 1.35, isDen: true }, // the den mound's real footprint
+];
+const treeOnlyObstacles = obstacles.filter(o => !o.isDen); // used when something's path destination IS the den
+
+// steers a desired direction away from any obstacle the mover is currently near, so paths curve
+// around trees/the den instead of cutting straight through them
+function steerAroundObstacles(position, dir, obstacleList) {
+  let sx = dir.x, sz = dir.z;
+  (obstacleList || obstacles).forEach(o => {
+    const dx = position.x - o.x, dz = position.z - o.z;
+    const dist = Math.hypot(dx, dz);
+    const margin = o.r + 0.35;
+    if (dist < margin && dist > 0.001) {
+      const strength = (margin - dist) / margin;
+      sx += (dx / dist) * strength * 2.2;
+      sz += (dz / dist) * strength * 2.2;
+    }
+  });
+  const len = Math.hypot(sx, sz);
+  if (len > 0.0001) { sx /= len; sz /= len; }
+  return { x: sx, z: sz };
+}
+
+function insideAnyObstacle(candidate, buffer) {
+  return obstacles.some(o => Math.hypot(candidate.x - o.x, candidate.z - o.z) < o.r + buffer);
+}
+
+function deerWanderTarget(center, radius) {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = randomWanderTarget(center, radius);
+    const withinIsland = Math.hypot(candidate.x, candidate.z) < ISLAND_SAFE_RADIUS;
+    if (!insideAnyObstacle(candidate, 0.3) && withinIsland) return candidate;
+  }
+  return new THREE.Vector3(center.x, 0.48, center.z); // fallback: just stay put rather than clip an obstacle
+}
+
+// bear roams a ring near the island's edge rather than the middle, but still safely inside the boundary
+function bearWanderTarget() {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.random() * (ISLAND_SAFE_RADIUS - 0.3); // anywhere across the island, not just a thin ring near the edge
+    const candidate = new THREE.Vector3(Math.cos(a) * r, 0.48, Math.sin(a) * r);
+    if (!insideAnyObstacle(candidate, 0.3)) return candidate;
+  }
+  // fallback: a fixed safe point, never repeats the same spot indefinitely
+  const a = Math.random() * Math.PI * 2;
+  return new THREE.Vector3(Math.cos(a) * 1.5, 0.48, Math.sin(a) * 1.5);
+}
+
+const deerClearing = new THREE.Vector3(0.6, 0.5, 0.4); // wide open grass area, roughly island-center
+const adult1 = buildDeer(false);
+adult1.position.set(0.5, 0.48, -0.6);
+Object.assign(adult1.userData, {
+  state: 'grazing', stateT: 0,
+  alertAt: 3 + Math.random() * 4,
+  target: deerWanderTarget(deerClearing, 2.6),
+  skipDir: null, skipCount: 0, skipDelay: 0,
+});
+scene.add(adult1);
+
+const adult2 = buildDeer(false);
+adult2.position.set(1.3, 0.48, -0.3);
+Object.assign(adult2.userData, {
+  state: 'grazing', stateT: 0,
+  alertAt: 4 + Math.random() * 4,
+  target: deerWanderTarget(deerClearing, 2.6),
+  skipDir: null, skipCount: 0, skipDelay: 0,
+});
+scene.add(adult2);
+
+const fawn = buildDeer(true);
+fawn.position.set(0.65, 0.48, -0.75);
+Object.assign(fawn.userData, {
+  state: 'grazing', stateT: 0,
+  alertAt: 2.5 + Math.random() * 3,
+  parent: adult1,
+  target: deerWanderTarget(adult1.position, 0.9),
+  skipDir: null, skipCount: 0, skipDelay: 0,
+});
+scene.add(fawn);
+
+const deer = [adult1, adult2, fawn];
+
+// ================= BEAR (faceted, automatic den cycle) =================
+function buildBear() {
+  const g = new THREE.Group();
+  const fur = facetMat(PALETTE.bearBrown, { roughness: 0.65 });
+  const furDark = facetMat(PALETTE.bearBrownDark, { roughness: 0.65 });
+  const eyeMat = facetMat(0x0f0c08, { roughness: 0.2 });
+  const noseMat = facetMat(0x14100c, { roughness: 0.3 });
+
+  const body = mesh(new THREE.IcosahedronGeometry(0.34, 1), fur);
+  body.scale.set(1.4, 0.85, 0.95);
+  body.position.y = 0.32;
+  g.add(body);
+
+  const head = mesh(new THREE.IcosahedronGeometry(0.19, 1), fur);
+  head.position.set(0.44, 0.42, 0);
+  g.add(head);
+
+  const snout = mesh(new THREE.IcosahedronGeometry(0.1, 1), furDark, false);
+  snout.scale.set(1.3, 0.8, 0.8);
+  snout.position.set(0.6, 0.36, 0);
+  g.add(snout);
+
+  const nose = mesh(new THREE.IcosahedronGeometry(0.03, 0), noseMat, false);
+  nose.position.set(0.72, 0.36, 0);
+  g.add(nose);
+
+  [-1, 1].forEach(s => {
+    const eye = mesh(new THREE.SphereGeometry(0.022, 8, 8), eyeMat, false);
+    eye.position.set(0.56, 0.46, s * 0.09);
+    g.add(eye);
+  });
+
+  [-1, 1].forEach(s => {
+    const ear = mesh(new THREE.IcosahedronGeometry(0.06, 0), furDark, false);
+    ear.position.set(0.4, 0.58, s * 0.15);
+    g.add(ear);
+  });
+
+  const legPositions = [[0.24, 0.16], [0.24, -0.16], [-0.2, 0.15], [-0.2, -0.15]];
+  legPositions.forEach(([lx, lz]) => {
+    const leg = mesh(new THREE.IcosahedronGeometry(0.13, 1), furDark, false);
+    leg.scale.set(0.85, 1.2, 0.85);
+    leg.position.set(lx, 0.1, lz);
+    g.add(leg);
+  });
+
+  g.userData.head = head;
+  return g;
+}
+const bear = buildBear();
+bear.scale.setScalar(1.0);
+const bearSpawn = bearWanderTarget();
+bear.position.set(bearSpawn.x, island.position.y + 0.48, bearSpawn.z);
+Object.assign(bear.userData, {
+  state: 'wandering', stateT: 0,
+  wanderDur: 150 + Math.random() * 90, // automatic den visits are now rare — clicking is the main way to send it in
+  sleepDur: 70 + Math.random() * 40,   // likewise rarely wakes on its own — click the den to bring it out
+  target: bearWanderTarget(),
+});
+scene.add(bear);
+
+// invisible hitbox over the den's entrance, for click-to-wake
+const denHitbox = new THREE.Mesh(new THREE.SphereGeometry(0.9, 8, 8), new THREE.MeshBasicMaterial({ visible: false }));
+denHitbox.position.set(denGroup.position.x, 0.6, denGroup.position.z);
+scene.add(denHitbox);
+
+function sendBearToDen() {
+  const bd = bear.userData;
+  if (bd.state !== 'wandering') return; // already headed in, asleep, or leaving — ignore
+  bd.state = 'toDen';
+  bd.stateT = 0;
+  showToast('The bear turns toward its den.');
+}
+
+function wakeBearFromDen() {
+  const bd = bear.userData;
+  if (bd.state !== 'sleeping') return; // not actually asleep — nothing to do
+  bd.state = 'leaving';
+  bd.stateT = 0;
+  bear.position.set(denEntrance.x, island.position.y + 0.48, denEntrance.z);
+  bear.visible = true;
+  showToast('The bear stirs and comes out.');
+}
+
+// ================= FIREFLIES =================
+const FIREFLY_COUNT = 45;
+const fireflyGeo = new THREE.BufferGeometry();
+const fireflyPos = new Float32Array(FIREFLY_COUNT * 3);
+const fireflyPhase = new Float32Array(FIREFLY_COUNT);
+const fireflySpeed = new Float32Array(FIREFLY_COUNT);
+const fireflyCenter = new THREE.Vector3(0, 0.7, 0.7);
+for (let i = 0; i < FIREFLY_COUNT; i++) {
+  const a = Math.random() * Math.PI * 2;
+  const r = Math.random() * 1.8;
+  fireflyPos[i*3] = fireflyCenter.x + Math.cos(a) * r;
+  fireflyPos[i*3+1] = fireflyCenter.y + Math.random() * 0.6;
+  fireflyPos[i*3+2] = fireflyCenter.z + Math.sin(a) * r;
+  fireflyPhase[i] = Math.random() * 10;
+  fireflySpeed[i] = 0.15 + Math.random() * 0.2;
+}
+fireflyGeo.setAttribute('position', new THREE.BufferAttribute(fireflyPos, 3));
+const fireflyMat = new THREE.PointsMaterial({ color: 0xffcf7a, size: 0.05, transparent: true, opacity: 0.9 });
+const fireflies = new THREE.Points(fireflyGeo, fireflyMat);
+island.add(fireflies);
+
+// ================= INTERACTION =================
+let isDragging = false, lastX = 0, lastY = 0, dragged = false;
+wrap.addEventListener('mousedown', (e) => {
+  isDragging = true; dragged = false; lastX = e.clientX; lastY = e.clientY;
+  wrap.classList.add('grabbing');
+});
+window.addEventListener('mouseup', () => { isDragging = false; wrap.classList.remove('grabbing'); });
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const dx = e.clientX - lastX, dy = e.clientY - lastY;
+  if (Math.abs(dx) + Math.abs(dy) > 3) dragged = true;
+  camTheta -= dx * 0.005;
+  camPhi = Math.min(1.45, Math.max(0.55, camPhi - dy * 0.005));
+  lastX = e.clientX; lastY = e.clientY;
+  updateCamera();
+});
+wrap.addEventListener('wheel', (e) => {
+  camDist = Math.min(22, Math.max(7, camDist + e.deltaY * 0.005));
+  updateCamera();
+}, { passive: true });
+
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let toastTimeout;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => el.classList.remove('show'), 2600);
+}
+
+function triggerSkip(d, delay) {
+  const dd = d.userData;
+  if (dd.state === 'skipping') return;
+  dd.state = 'skipping';
+  dd.stateT = 0;
+  dd.skipDelay = delay || 0;
+  const ang = Math.random() * Math.PI * 2;
+  dd.skipDir = new THREE.Vector3(Math.cos(ang), 0, Math.sin(ang));
+  dd.skipCount = 0;
+}
+
+function nearestAvailableDeer(point) {
+  let nearest = null, nearestDist = Infinity;
+  deer.forEach(d => {
+    if (d.userData.state === 'skipping') return;
+    const dist = d.position.distanceTo(point);
+    if (dist < nearestDist) { nearestDist = dist; nearest = d; }
+  });
+  return nearest;
+}
+
+function clampToIsland(point) {
+  const dist = Math.hypot(point.x, point.z);
+  if (dist > ISLAND_SAFE_RADIUS) {
+    const scale = ISLAND_SAFE_RADIUS / dist;
+    point.x *= scale;
+    point.z *= scale;
+  }
+  return point;
+}
+
+function sendDeerToDrink(point) {
+  const d = nearestAvailableDeer(point);
+  if (!d) return;
+  const dd = d.userData;
+  dd.state = 'toDrink';
+  dd.stateT = 0;
+  dd.pauseT = 0;
+  dd.target = clampToIsland(point.clone());
+  showToast('It heads for the water.');
+}
+
+function sendDeerToGraze(point) {
+  const d = nearestAvailableDeer(point);
+  if (!d) return;
+  const dd = d.userData;
+  dd.state = 'grazing';
+  dd.stateT = 0;
+  dd.pauseT = 0;
+  dd.target = clampToIsland(point.clone());
+  showToast('It wanders over to graze.');
+}
+
+wrap.addEventListener('click', (e) => {
+  if (dragged) return;
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+
+  // click the bear (while it's out and about) to send it into the den
+  if (bear.visible) {
+    const bearHits = raycaster.intersectObject(bear, true);
+    if (bearHits.length) {
+      sendBearToDen();
+      return;
+    }
+  }
+
+  // click the den to wake the bear and bring it back out
+  const denHits = raycaster.intersectObject(denHitbox);
+  if (denHits.length) {
+    wakeBearFromDen();
+    return;
+  }
+
+  // clicking a deer directly still triggers the skip
+  for (const d of deer) {
+    const hits = raycaster.intersectObject(d, true);
+    if (hits.length) {
+      triggerSkip(d, 0);
+      showToast('It bounds away, delighted.');
+      if (d === adult1 && fawn.userData.parent === adult1) {
+        triggerSkip(fawn, 0.25);
+      }
+      return;
+    }
+  }
+
+  // clicking the stream/pool sends the nearest deer to drink there
+  const waterHits = raycaster.intersectObjects(streamMeshes);
+  if (waterHits.length) {
+    const p = waterHits[0].point;
+    sendDeerToDrink(new THREE.Vector3(p.x, 0.48, p.z));
+    return;
+  }
+
+  // clicking open grass sends the nearest deer to graze there
+  const grassHits = raycaster.intersectObject(topSlab);
+  if (grassHits.length) {
+    const p = grassHits[0].point;
+    sendDeerToGraze(new THREE.Vector3(p.x, 0.48, p.z));
+  }
+});
+
+// ================= LOOP =================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.getElapsedTime();
+
+  island.rotation.y = Math.sin(t * 0.08) * 0.02;
+  island.position.y = Math.sin(t * 0.35) * 0.08;
+
+  floatRocks.forEach(r => {
+    r.position.y = r.userData.baseY + Math.sin(t * 0.6 + r.userData.phase) * 0.15;
+    r.rotation.y += dt * 0.04;
+  });
+
+  // fireflies — irregular flicker, gentle wandering drift
+  const fp = fireflyGeo.attributes.position.array;
+  for (let i = 0; i < FIREFLY_COUNT; i++) {
+    fp[i*3] += Math.sin(t * fireflySpeed[i] + fireflyPhase[i]) * 0.002;
+    fp[i*3+1] += Math.sin(t * fireflySpeed[i] * 1.3 + fireflyPhase[i] * 2) * 0.0015;
+    fp[i*3+2] += Math.cos(t * fireflySpeed[i] + fireflyPhase[i]) * 0.002;
+  }
+  fireflyGeo.attributes.position.needsUpdate = true;
+  fireflyMat.opacity = 0.6 + Math.sin(t * 1.7) * 0.15 + Math.sin(t * 3.1 + 2) * 0.15;
+  lanternLight.intensity = 0.8 + Math.sin(t * 2.1) * 0.15;
+
+  // ================= DEER behavior =================
+  deer.forEach(d => {
+    const dd = d.userData;
+    if (dd.state === 'grazing') {
+      dd.stateT += dt;
+      const dir = new THREE.Vector3(dd.target.x - d.position.x, 0, dd.target.z - d.position.z);
+      const dist = dir.length();
+      if (dist > 0.15) {
+        dir.normalize();
+        const steered = steerAroundObstacles(d.position, dir);
+        d.position.x += steered.x * dt * 0.4;
+        d.position.z += steered.z * dt * 0.4;
+        d.rotation.y = Math.atan2(steered.x, steered.z);
+        if (dd.neck) dd.neck.rotation.x = -0.1; // head up a bit while actually walking
+      } else {
+        dd.pauseT = (dd.pauseT || 0) + dt;
+        if (dd.neck) dd.neck.rotation.x = Math.sin(t * 1.5) * 0.05 - 0.15; // graze bob once stopped
+        if (dd.head) dd.head.rotation.x = Math.sin(t * 1.5) * 0.05;
+        if (dd.pauseT > 2.5 + Math.random() * 3) {
+          dd.pauseT = 0;
+          dd.target = dd.parent
+            ? deerWanderTarget(dd.parent.position, 0.9)
+            : deerWanderTarget(deerClearing, 2.6);
+        }
+      }
+      if (dd.stateT > dd.alertAt) {
+        dd.stateT = 0;
+        // roll between an alert pause and a trip to the stream for a drink
+        if (!dd.parent && Math.random() < 0.4) {
+          const pt = streamPoints[Math.floor(Math.random() * streamPoints.length)];
+          dd.state = 'toDrink';
+          dd.target = new THREE.Vector3(pt.x, 0.48, pt.z);
+        } else {
+          dd.state = 'alert';
+        }
+      }
+    } else if (dd.state === 'alert') {
+      dd.stateT += dt;
+      if (dd.neck) dd.neck.rotation.x = -0.5;
+      if (dd.head) dd.head.rotation.x = -0.2;
+      if (dd.stateT > 1.6) {
+        dd.state = 'grazing'; dd.stateT = 0;
+        dd.alertAt = 3 + Math.random() * 5;
+      }
+    } else if (dd.state === 'toDrink') {
+      const dir = new THREE.Vector3(dd.target.x - d.position.x, 0, dd.target.z - d.position.z);
+      const dist = dir.length();
+      if (dist > 0.18) {
+        dir.normalize();
+        const steered = steerAroundObstacles(d.position, dir);
+        d.position.x += steered.x * dt * 0.4;
+        d.position.z += steered.z * dt * 0.4;
+        d.rotation.y = Math.atan2(steered.x, steered.z);
+        if (dd.neck) dd.neck.rotation.x = -0.1;
+      } else {
+        dd.state = 'drinking'; dd.stateT = 0;
+      }
+    } else if (dd.state === 'drinking') {
+      dd.stateT += dt;
+      if (dd.neck) dd.neck.rotation.x = 0.65; // head down at the water
+      if (dd.head) dd.head.rotation.x = 0.2 + Math.sin(t * 6) * 0.05;
+      if (dd.stateT > 2.0) {
+        if (dd.neck) dd.neck.rotation.x = 0;
+        if (dd.head) dd.head.rotation.x = 0;
+        dd.state = 'grazing'; dd.stateT = 0;
+        dd.alertAt = 3 + Math.random() * 5;
+        dd.target = deerWanderTarget(deerClearing, 2.6);
+      }
+    } else if (dd.state === 'skipping') {
+      dd.stateT += dt;
+      if (dd.stateT < dd.skipDelay) return;
+      const localT = dd.stateT - dd.skipDelay;
+      const hopDur = 0.35;
+      const hopIndex = Math.floor(localT / hopDur);
+      const hopP = (localT % hopDur) / hopDur;
+      if (hopIndex < 4) {
+        d.position.x += dd.skipDir.x * dt * 1.8;
+        d.position.z += dd.skipDir.z * dt * 1.8;
+        d.position.y = 0.48 + Math.sin(hopP * Math.PI) * 0.18;
+        d.rotation.y = Math.atan2(dd.skipDir.x, dd.skipDir.z);
+      } else {
+        d.position.y = 0.48;
+        dd.state = 'grazing'; dd.stateT = 0;
+        dd.alertAt = 3 + Math.random() * 4;
+        dd.target = dd.parent
+          ? deerWanderTarget(dd.parent.position, 0.9)
+          : deerWanderTarget(deerClearing, 2.6);
+      }
+    }
+    // hard safety clamp — deer can never end up outside the island regardless of any targeting edge case
+    const dDist = Math.hypot(d.position.x, d.position.z);
+    if (dDist > ISLAND_SAFE_RADIUS) {
+      const scale = ISLAND_SAFE_RADIUS / dDist;
+      d.position.x *= scale;
+      d.position.z *= scale;
+    }
+  });
+
+  // ================= BEAR behavior (fully automatic) =================
+  const bd = bear.userData;
+  bd.stateT += dt;
+  if (bd.state === 'wandering') {
+    const dir = new THREE.Vector3(bd.target.x - bear.position.x, 0, bd.target.z - bear.position.z);
+    const dist = dir.length();
+    if (dist > 0.15) {
+      dir.normalize();
+      const steered = steerAroundObstacles(bear.position, dir);
+      bear.position.x += steered.x * dt * 0.16; // slower, lighter gait
+      bear.position.z += steered.z * dt * 0.16;
+      bear.rotation.y = Math.atan2(steered.x, steered.z);
+    } else {
+      bd.stateT2 = (bd.stateT2 || 0) + dt;
+      // pause a moment at each spot before ambling to the next, so it doesn't feel jittery
+      if (bd.stateT2 > 2 + Math.random() * 3) {
+        bd.target = bearWanderTarget();
+        bd.stateT2 = 0;
+      }
+    }
+    bear.visible = true;
+    bear.position.y = island.position.y + 0.48 + Math.abs(Math.sin(t * 1.2)) * 0.01;
+    if (bd.stateT > bd.wanderDur) {
+      bd.state = 'toDen'; bd.stateT = 0;
+    }
+  } else if (bd.state === 'toDen') {
+    const dir = new THREE.Vector3(denEntrance.x - bear.position.x, 0, denEntrance.z - bear.position.z);
+    const dist = dir.length();
+    if (dist > 0.15) {
+      dir.normalize();
+      const steered = steerAroundObstacles(bear.position, dir, treeOnlyObstacles);
+      bear.position.x += steered.x * dt * 0.2;
+      bear.position.z += steered.z * dt * 0.2;
+      bear.rotation.y = Math.atan2(steered.x, steered.z);
+      bear.position.y = island.position.y + 0.48;
+    } else {
+      bd.state = 'sleeping'; bd.stateT = 0;
+      bear.visible = false;
+      bd.sleepDur = 70 + Math.random() * 40;
+    }
+  } else if (bd.state === 'sleeping') {
+    if (bd.stateT > bd.sleepDur) {
+      bd.state = 'leaving'; bd.stateT = 0;
+      bear.position.set(denEntrance.x, island.position.y + 0.48, denEntrance.z);
+      bear.visible = true;
+    }
+  } else if (bd.state === 'leaving') {
+    bd.stateT += dt;
+    bear.position.y = island.position.y + 0.48 + Math.min(1, bd.stateT * 2) * 0.02;
+    if (bd.stateT > 0.6) {
+      bd.state = 'wandering'; bd.stateT = 0; bd.stateT2 = 0;
+      bd.wanderDur = 150 + Math.random() * 90;
+      bd.target = bearWanderTarget();
+    }
+  }
+  // hard safety clamp — bear can never end up outside the island regardless of any targeting edge case
+  if (bd.state !== 'sleeping') {
+    const bDist = Math.hypot(bear.position.x, bear.position.z);
+    if (bDist > ISLAND_SAFE_RADIUS) {
+      const scale = ISLAND_SAFE_RADIUS / bDist;
+      bear.position.x *= scale;
+      bear.position.z *= scale;
+    }
+  }
+
+  updateCamera();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    const l = document.getElementById('loading');
+    l.style.opacity = '0';
+    setTimeout(() => l.style.display = 'none', 800);
+  }, 500);
+});
+</script>
+
+</body>
+</html>
