@@ -1,1 +1,809 @@
-﻿
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Isle — Floating Dioramas</title>
+<meta name="description" content="A growing archipelago of tiny interactive floating worlds.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=Inter:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --gold: #c8944a;
+    --ink: #2a1f14;
+    --muted: rgba(42,31,20,0.55);
+  }
+  html, body {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    font-family: 'Inter', sans-serif;
+    background: linear-gradient(185deg, #b8d4f0 0%, #dce8f5 30%, #f5e8d0 65%, #f0d4a8 100%);
+    cursor: grab;
+    user-select: none;
+  }
+  body.grabbing { cursor: grabbing; }
+
+  #bg-canvas { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+
+  #world { position: fixed; inset: 0; z-index: 2; will-change: transform; }
+
+  .island-node {
+    position: absolute;
+    display: flex; flex-direction: column; align-items: center;
+    cursor: pointer;
+    transform: translate(-50%, -50%);
+    transition: filter 0.4s ease;
+  }
+  .island-node:hover { filter: drop-shadow(0 0 22px rgba(200,148,74,0.8)) drop-shadow(0 0 8px rgba(200,148,74,0.4)); }
+  .island-node:hover .island-label { opacity: 1; transform: translateY(0); }
+  .island-node:hover .island-canvas-wrap { transform: scale(1.07) translateY(-5px); }
+
+  .island-canvas-wrap {
+    position: relative;
+    /* Octagon — echoes the 8-sided island top */
+    clip-path: polygon(30% 0%, 70% 0%, 100% 30%, 100% 70%, 70% 100%, 30% 100%, 0% 70%, 0% 30%);
+    overflow: hidden;
+    transition: transform 0.45s cubic-bezier(0.34,1.56,0.64,1);
+    /* drop-shadow traces the octagon silhouette */
+    filter: drop-shadow(0 6px 22px rgba(0,0,0,0.28)) drop-shadow(0 2px 6px rgba(0,0,0,0.18)) drop-shadow(0 0 0 1.5px rgba(255,255,255,0.22));
+  }
+  .island-canvas-wrap canvas { display: block; }
+
+  .island-label {
+    margin-top: 16px; text-align: center;
+    opacity: 0.7; transform: translateY(4px);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+  }
+  .island-label h3 {
+    font-family: 'Cormorant Garamond', Georgia, serif; font-size: 20px; font-weight: 600;
+    color: var(--ink); letter-spacing: 0.02em; text-shadow: 0 1px 8px rgba(255,255,255,0.8);
+  }
+  .island-label p {
+    font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: var(--muted); margin-top: 4px; text-shadow: 0 1px 4px rgba(255,255,255,0.6);
+  }
+
+  /* ───── CONSTELLATION & CENTRAL ANCHOR ───── */
+  #constellation-svg {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 1300px; height: 1300px;
+    pointer-events: none;
+    z-index: 1;
+    overflow: visible;
+  }
+
+  .central-anchor {
+    position: absolute;
+    left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 190px; height: 190px;
+    border-radius: 50%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 3;
+    cursor: pointer;
+    background: radial-gradient(circle at 40% 35%, rgba(255,255,255,0.92) 0%, rgba(245,232,210,0.82) 45%, rgba(220,195,155,0.7) 100%);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    box-shadow:
+      0 12px 35px rgba(200,148,74,0.35),
+      0 4px 15px rgba(0,0,0,0.1),
+      inset 0 2px 4px rgba(255,255,255,0.9),
+      inset 0 -2px 6px rgba(180,130,60,0.25);
+    border: 2px solid rgba(255,255,255,0.85);
+    transition: transform 0.4s cubic-bezier(0.34,1.56,0.64,1), box-shadow 0.4s ease;
+  }
+  .central-anchor:hover {
+    transform: translate(-50%, -50%) scale(1.06);
+    box-shadow:
+      0 16px 48px rgba(200,148,74,0.55),
+      0 0 24px rgba(200,148,74,0.4),
+      inset 0 2px 6px rgba(255,255,255,1);
+  }
+
+  .anchor-ring {
+    position: absolute;
+    inset: 8px;
+    border-radius: 50%;
+    border: 1px dashed rgba(200,148,74,0.5);
+    animation: rotateSlow 45s linear infinite;
+  }
+  .anchor-ring-inner {
+    position: absolute;
+    inset: 18px;
+    border-radius: 50%;
+    border: 1px solid rgba(200,148,74,0.3);
+  }
+  @keyframes rotateSlow {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+  }
+
+  .anchor-emblem {
+    width: 32px; height: 32px;
+    margin-bottom: 6px;
+    color: var(--gold);
+    filter: drop-shadow(0 2px 4px rgba(200,148,74,0.4));
+  }
+  .anchor-title {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: 19px;
+    font-weight: 600;
+    letter-spacing: 0.12em;
+    color: var(--ink);
+    text-transform: uppercase;
+  }
+  .anchor-sub {
+    font-size: 9px;
+    letter-spacing: 0.28em;
+    color: var(--gold);
+    text-transform: uppercase;
+    font-weight: 600;
+    margin-top: 2px;
+  }
+
+  #hud {
+    position: fixed; inset: 0; z-index: 10; pointer-events: none;
+    padding: 4.5vh 5vw; display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .hud-top {
+    max-width: 320px;
+    pointer-events: none;
+  }
+  .hud-eyebrow {
+    font-size: 10px; letter-spacing: 0.35em; text-transform: uppercase;
+    color: var(--gold); font-weight: 600; margin-bottom: 8px;
+  }
+  .hud-title {
+    font-family: 'Cormorant Garamond', Georgia, serif;
+    font-size: clamp(2.4rem, 4.5vw, 3.6rem); font-weight: 600;
+    color: var(--ink); line-height: 0.95; letter-spacing: -0.01em;
+    text-shadow: 0 2px 12px rgba(255,255,255,0.7);
+  }
+  .hud-title em { font-style: italic; font-weight: 400; color: #8a6238; }
+  .hud-sub {
+    margin-top: 10px; font-size: 13px; color: var(--muted); line-height: 1.55;
+    text-shadow: 0 1px 6px rgba(255,255,255,0.6);
+  }
+  .hud-bottom { display: flex; align-items: flex-end; justify-content: space-between; }
+  .hud-legend {
+    display: flex; gap: 20px; font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase;
+    color: var(--muted); text-shadow: 0 1px 4px rgba(255,255,255,0.6);
+  }
+
+  #diorama-overlay {
+    position: fixed; inset: 0; z-index: 100; background: #000;
+    display: none; flex-direction: column;
+  }
+  #diorama-overlay.entering { display: flex; animation: overlayIn 0.55s cubic-bezier(0.4,0,0.2,1) both; }
+  #diorama-overlay.visible { display: flex; }
+  #diorama-overlay.leaving { display: flex; animation: overlayOut 0.4s cubic-bezier(0.4,0,0.2,1) both; }
+  @keyframes overlayIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+  @keyframes overlayOut { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(1.02); } }
+
+  #diorama-frame { flex: 1; border: none; display: block; width: 100%; height: 100%; }
+
+  #back-btn {
+    position: absolute; top: 28px; right: 36px; left: auto; z-index: 101;
+    background: rgba(18, 22, 28, 0.55); backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255,255,255,0.3); color: #fff;
+    font-family: 'Inter', sans-serif; font-size: 11px; font-weight: 500;
+    letter-spacing: 0.16em; text-transform: uppercase;
+    padding: 10px 20px 10px 14px; border-radius: 100px; cursor: pointer;
+    display: flex; align-items: center; gap: 8px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.3);
+    transition: background 0.25s ease, transform 0.25s ease, border-color 0.25s ease;
+    pointer-events: auto;
+  }
+  #back-btn:hover {
+    background: rgba(18, 22, 28, 0.85);
+    border-color: rgba(255,255,255,0.65);
+    transform: translateY(-2px);
+  }
+  #back-btn svg { width: 14px; height: 14px; }
+
+  #island-count {
+    font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted);
+    font-weight: 600; text-shadow: 0 1px 4px rgba(255,255,255,0.6);
+  }
+
+  #veil {
+    position: fixed; inset: 0; z-index: 200;
+    background: linear-gradient(185deg, #b8d4f0 0%, #f5e8d0 100%);
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 18px; transition: opacity 0.8s ease;
+  }
+  #veil.hidden { opacity: 0; pointer-events: none; }
+  .veil-title { font-family: 'Cormorant Garamond', Georgia, serif; font-size: 2.4rem; color: var(--ink); font-style: italic; letter-spacing: 0.05em; }
+  .veil-dots { display: flex; gap: 8px; }
+  .veil-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--gold); animation: dotPulse 1.4s ease-in-out infinite; }
+  .veil-dot:nth-child(2) { animation-delay: 0.2s; }
+  .veil-dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes dotPulse { 0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); } 40% { opacity: 1; transform: scale(1.2); } }
+
+  #enter-hint {
+    position: fixed; bottom: 14vh; left: 50%;
+    transform: translateX(-50%) translateY(10px);
+    font-size: 13px; font-style: italic; color: var(--ink);
+    background: rgba(255,255,255,0.55); backdrop-filter: blur(10px);
+    padding: 9px 22px; border-radius: 100px; opacity: 0;
+    transition: opacity 0.6s ease, transform 0.6s ease;
+    z-index: 9; pointer-events: none; white-space: nowrap;
+    border: 1px solid rgba(255,255,255,0.5);
+  }
+  #enter-hint.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+
+<canvas id="bg-canvas"></canvas>
+<div id="world"></div>
+
+<div id="hud">
+  <div class="hud-top">
+    <div class="hud-eyebrow">A Collection of Worlds</div>
+    <h1 class="hud-title">The <em>Isle</em></h1>
+    <p class="hud-sub">A growing archipelago of tiny interactive worlds.</p>
+  </div>
+  <div class="hud-bottom">
+    <div class="hud-legend">
+      <span>Drag &middot; Explore</span>
+      <span>Click &middot; Enter</span>
+      <span>Scroll &middot; Zoom</span>
+    </div>
+    <div id="island-count">8 Islands</div>
+  </div>
+</div>
+
+<div id="enter-hint"></div>
+
+<div id="diorama-overlay">
+  <button id="back-btn">
+    <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <path d="M9 2L4 7l5 5"/>
+    </svg>
+    Back to The Isle
+  </button>
+  <iframe id="diorama-frame" src="" title="Diorama"></iframe>
+</div>
+
+<div id="veil">
+  <div class="veil-title">The Isle</div>
+  <div class="veil-dots">
+    <div class="veil-dot"></div>
+    <div class="veil-dot"></div>
+    <div class="veil-dot"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+'use strict';
+
+// ═══════════════════════════════════════════════════════
+// ISLAND REGISTRY (Harmonious 8-Point Radial Octagon)
+// ═══════════════════════════════════════════════════════
+// Radius R = 460px from central anchor
+const RING_RADIUS = 460;
+const DIAGONAL_OFFSET = Math.round(RING_RADIUS * Math.SQRT1_2); // ~325px
+
+const ISLANDS = [
+  { id: 'polar-caps',   file: 'polar-caps-diorama.html',   name: 'Polar Caps',    tagline: 'Frozen Silence',      size: 215, wx: 0,                 wy: -RING_RADIUS,     bg: 0xd0e4f0, buildFn: 'buildPolarCaps'    },
+  { id: 'silvane',      file: 'silvane-diorama.html',      name: 'Silvane',       tagline: 'Woodland at Dusk',    size: 225, wx: DIAGONAL_OFFSET,   wy: -DIAGONAL_OFFSET, bg: 0x5a6070, buildFn: 'buildSilvane'      },
+  { id: 'ocean',        file: 'ocean-diorama.html',        name: 'Ocean',         tagline: 'The Deep Reef',       size: 220, wx: RING_RADIUS,       wy: 0,                bg: 0x0e3a52, buildFn: 'buildOcean'        },
+  { id: 'bird-paradise',file: 'bird-paradise-diorama.html',name: 'Bird Paradise', tagline: 'Tropical Canopy',     size: 225, wx: DIAGONAL_OFFSET,   wy: DIAGONAL_OFFSET,  bg: 0x7ab8d4, buildFn: 'buildBirdParadise' },
+  { id: 'lake-koi',     file: 'lake-koi-diorama.html',     name: 'Lake and Koi',  tagline: 'Still Waters',        size: 215, wx: 0,                 wy: RING_RADIUS,      bg: 0xd4c0a0, buildFn: 'buildLakeKoi'      },
+  { id: 'barnyard',     file: 'barnyard-diorama.html',     name: 'Barnyard',      tagline: 'Golden Afternoon',    size: 215, wx: -DIAGONAL_OFFSET,  wy: DIAGONAL_OFFSET,  bg: 0xb8c898, buildFn: 'buildBarnyard'     },
+  { id: 'desert',       file: 'desert-diorama.html',       name: 'Desert',        tagline: 'Scorched and Still',  size: 215, wx: -RING_RADIUS,      wy: 0,                bg: 0xd4a860, buildFn: 'buildDesert'       },
+  { id: 'rainforest',   file: 'rainforest-diorama.html',   name: 'Rainforest',    tagline: 'Verdant Depths',      size: 220, wx: -DIAGONAL_OFFSET,  wy: -DIAGONAL_OFFSET, bg: 0x2a4830, buildFn: 'buildRainforest'   },
+];
+
+// ═══════════════════════════════════════════════════════
+// BACKGROUND CANVAS
+// ═══════════════════════════════════════════════════════
+const bgCanvas = document.getElementById('bg-canvas');
+const bgCtx = bgCanvas.getContext('2d');
+function resizeBg() { bgCanvas.width = window.innerWidth; bgCanvas.height = window.innerHeight; }
+resizeBg();
+window.addEventListener('resize', resizeBg);
+
+const clouds = Array.from({ length: 18 }, () => ({
+  x: Math.random() * 3000 - 1500,
+  y: Math.random() * window.innerHeight * 0.55,
+  w: 120 + Math.random() * 220, h: 40 + Math.random() * 60,
+  opacity: 0.15 + Math.random() * 0.25,
+  speed: 0.04 + Math.random() * 0.06,
+  phase: Math.random() * Math.PI * 2,
+}));
+
+function drawCloud(x, y, w, h, opacity) {
+  bgCtx.save(); bgCtx.globalAlpha = opacity; bgCtx.fillStyle = '#ffffff';
+  for (let i = 0; i < 5; i++) {
+    const cx = x + (i / 4) * w;
+    const cy = y + Math.sin(i / 4 * Math.PI) * h * 0.5;
+    const r = h * (0.5 + Math.sin(i / 4 * Math.PI) * 0.35);
+    bgCtx.beginPath(); bgCtx.arc(cx, cy, r, 0, Math.PI * 2); bgCtx.fill();
+  }
+  bgCtx.restore();
+}
+
+let bgT = 0;
+function drawBg(px, py) {
+  bgT += 0.008;
+  bgCtx.clearRect(0, 0, bgCanvas.width, bgCanvas.height);
+  const grad = bgCtx.createLinearGradient(0, 0, 0, bgCanvas.height);
+  grad.addColorStop(0, '#a8c8e8'); grad.addColorStop(0.35, '#d0e4f5');
+  grad.addColorStop(0.7, '#f0e4cc'); grad.addColorStop(1, '#e8d4a8');
+  bgCtx.fillStyle = grad; bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+  const sg = bgCtx.createRadialGradient(bgCanvas.width * 0.72, bgCanvas.height * 0.62, 0, bgCanvas.width * 0.72, bgCanvas.height * 0.62, 280);
+  sg.addColorStop(0, 'rgba(255,220,140,0.28)'); sg.addColorStop(0.4, 'rgba(255,190,80,0.10)'); sg.addColorStop(1, 'rgba(255,180,60,0)');
+  bgCtx.fillStyle = sg; bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+  const hg = bgCtx.createLinearGradient(0, bgCanvas.height * 0.55, 0, bgCanvas.height);
+  hg.addColorStop(0, 'rgba(255,240,210,0)'); hg.addColorStop(1, 'rgba(255,235,200,0.3)');
+  bgCtx.fillStyle = hg; bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+  clouds.forEach(c => {
+    const sx = c.x + px * 0.12 + Math.sin(bgT * c.speed + c.phase) * 18;
+    drawCloud(sx, c.y + py * 0.06, c.w, c.h, c.opacity);
+  });
+  const vg = bgCtx.createRadialGradient(bgCanvas.width/2, bgCanvas.height/2, bgCanvas.width*0.2, bgCanvas.width/2, bgCanvas.height/2, bgCanvas.width*0.85);
+  vg.addColorStop(0, 'rgba(255,240,220,0)'); vg.addColorStop(1, 'rgba(200,180,150,0.18)');
+  bgCtx.fillStyle = vg; bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
+}
+
+// ═══════════════════════════════════════════════════════
+// PAN / DRAG STATE
+// ═══════════════════════════════════════════════════════
+let panX = 0, panY = 0;
+let dragStart = null, panStart = null;
+let isDragging = false;
+let vel = { x: 0, y: 0 };
+let lastPos = null, lastTime = 0;
+// Initial scale fits full 8-island constellation in standard viewports
+let worldScale = Math.min(0.95, Math.max(0.6, (window.innerHeight - 80) / 1080));
+const MIN_SCALE = 0.45, MAX_SCALE = 1.6;
+const world = document.getElementById('world');
+
+function applyTransform() {
+  world.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + worldScale + ')';
+}
+applyTransform();
+
+document.addEventListener('mousedown', e => {
+  if (e.target.closest('#diorama-overlay')) return;
+  dragStart = { x: e.clientX, y: e.clientY };
+  panStart = { x: panX, y: panY };
+  isDragging = false;
+  lastPos = { x: e.clientX, y: e.clientY };
+  lastTime = performance.now();
+  vel = { x: 0, y: 0 };
+  document.body.classList.add('grabbing');
+});
+
+document.addEventListener('mousemove', e => {
+  if (!dragStart) return;
+  const dx = e.clientX - dragStart.x, dy = e.clientY - dragStart.y;
+  if (!isDragging && Math.hypot(dx, dy) > 4) isDragging = true;
+  if (isDragging) {
+    const now = performance.now(), dt = now - lastTime;
+    if (dt > 0) { vel.x = (e.clientX - lastPos.x) / dt * 16; vel.y = (e.clientY - lastPos.y) / dt * 16; }
+    lastPos = { x: e.clientX, y: e.clientY }; lastTime = now;
+    panX = panStart.x + dx; panY = panStart.y + dy; applyTransform();
+  }
+});
+
+document.addEventListener('mouseup', e => {
+  document.body.classList.remove('grabbing');
+  if (!isDragging) {
+    const node = e.target.closest('.island-node');
+    if (node) openDiorama(node.dataset.file, node.dataset.name);
+  }
+  dragStart = null; isDragging = false;
+});
+
+// Touch
+let tx0, ty0, tpx0, tpy0;
+document.addEventListener('touchstart', e => {
+  if (e.touches.length !== 1) return;
+  const t = e.touches[0];
+  tx0 = t.clientX; ty0 = t.clientY; tpx0 = panX; tpy0 = panY;
+  lastPos = { x: t.clientX, y: t.clientY }; lastTime = performance.now();
+  vel = { x: 0, y: 0 }; isDragging = false;
+  dragStart = { x: t.clientX, y: t.clientY };
+}, { passive: true });
+
+document.addEventListener('touchmove', e => {
+  if (e.touches.length !== 1) return;
+  const t = e.touches[0];
+  const dx = t.clientX - tx0, dy = t.clientY - ty0;
+  if (!isDragging && Math.hypot(dx, dy) > 5) isDragging = true;
+  if (isDragging) {
+    const now = performance.now(), dt = now - lastTime;
+    if (dt > 0) { vel.x = (t.clientX - lastPos.x) / dt * 16; vel.y = (t.clientY - lastPos.y) / dt * 16; }
+    lastPos = { x: t.clientX, y: t.clientY }; lastTime = now;
+    panX = tpx0 + dx; panY = tpy0 + dy; applyTransform();
+  }
+}, { passive: true });
+
+document.addEventListener('touchend', e => {
+  if (!isDragging) {
+    const node = e.target.closest('.island-node');
+    if (node) openDiorama(node.dataset.file, node.dataset.name);
+  }
+  isDragging = false; dragStart = null;
+});
+
+document.addEventListener('wheel', e => {
+  e.preventDefault();
+  worldScale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, worldScale - e.deltaY * 0.001));
+  applyTransform();
+}, { passive: false });
+
+function applyInertia() {
+  if (!isDragging && (Math.abs(vel.x) > 0.01 || Math.abs(vel.y) > 0.01)) {
+    panX += vel.x; panY += vel.y; vel.x *= 0.92; vel.y *= 0.92; applyTransform();
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// DIORAMA OVERLAY
+// ═══════════════════════════════════════════════════════
+const overlay = document.getElementById('diorama-overlay');
+const frame = document.getElementById('diorama-frame');
+const hint = document.getElementById('enter-hint');
+document.getElementById('back-btn').addEventListener('click', closeDiorama);
+
+function openDiorama(file, name) {
+  overlay.className = 'entering';
+  frame.src = file;
+  overlay.addEventListener('animationend', () => { overlay.className = 'visible'; }, { once: true });
+}
+function closeDiorama() {
+  overlay.className = 'leaving';
+  overlay.addEventListener('animationend', () => { overlay.className = ''; frame.src = ''; }, { once: true });
+}
+
+let hintTimer = null;
+function showHint(name) { hint.textContent = 'Click to enter ' + name; hint.classList.add('show'); if (hintTimer) clearTimeout(hintTimer); }
+function hideHint() { hintTimer = setTimeout(() => hint.classList.remove('show'), 200); }
+
+// ═══════════════════════════════════════════════════════
+// THREE.JS MINI SCENE FACTORY
+// ═══════════════════════════════════════════════════════
+function makeMini(canvas, bgColor, buildIsland) {
+  const sz = canvas.width;
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 60);
+  const camDist = 9;
+  function updateCam(theta) {
+    camera.position.set(camDist * Math.sin(1.05) * Math.sin(theta), camDist * Math.cos(1.05) + 0.5, camDist * Math.sin(1.05) * Math.cos(theta));
+    camera.lookAt(0, 0.4, 0);
+  }
+  updateCam(0.5);
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+  renderer.setSize(sz, sz); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setClearColor(bgColor, 1); renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  scene.add(new THREE.HemisphereLight(0xc8d8f0, 0x2a2010, 0.65));
+  const key = new THREE.DirectionalLight(0xfff8e0, 1.1);
+  key.position.set(4, 8, 3); key.castShadow = true; key.shadow.mapSize.set(512, 512);
+  key.shadow.camera.left = key.shadow.camera.bottom = -5; key.shadow.camera.right = key.shadow.camera.top = 5;
+  scene.add(key);
+  const rim = new THREE.DirectionalLight(0x7090b0, 0.35); rim.position.set(-5, 2, -5); scene.add(rim);
+
+  function m(color, opts) {
+    opts = opts || {};
+    return new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: opts.r !== undefined ? opts.r : 0.75, metalness: opts.m !== undefined ? opts.m : 0.02, transparent: !!opts.t, opacity: opts.o !== undefined ? opts.o : 1 });
+  }
+  function mk(geo, mat, shad) { const mesh = new THREE.Mesh(geo, mat); mesh.castShadow = shad !== false; mesh.receiveShadow = true; return mesh; }
+  function trail(g, dropY, color) {
+    const N = 28, pos = new Float32Array(N * 3);
+    for (let i = 0; i < N; i++) { const t = i/N; pos[i*3]=(Math.random()-0.5)*0.25*(1-t); pos[i*3+1]=dropY-t*2.2; pos[i*3+2]=(Math.random()-0.5)*0.25*(1-t); }
+    const geo2 = new THREE.BufferGeometry(); geo2.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.add(new THREE.Points(geo2, new THREE.PointsMaterial({ color, size: 0.04, transparent: true, opacity: 0.55 })));
+  }
+
+  const islandGroup = buildIsland(m, mk, trail);
+  scene.add(islandGroup);
+  const bobPhase = Math.random() * Math.PI * 2;
+  let alive = true;
+  function loop(t) {
+    if (!alive) return;
+    requestAnimationFrame(loop);
+    const ts = t * 0.001;
+    islandGroup.rotation.y = ts * 0.2;
+    islandGroup.position.y = Math.sin(ts * 0.7 + bobPhase) * 0.08;
+    updateCam(ts * 0.2 + 0.5);
+    renderer.render(scene, camera);
+  }
+  requestAnimationFrame(loop);
+  return { dispose: () => { alive = false; renderer.dispose(); } };
+}
+
+// ═══════════════════════════════════════════════════════
+// ISLAND BUILD FUNCTIONS
+// ═══════════════════════════════════════════════════════
+function islandBase(m, mk, topColor, coneColor, ringColor) {
+  const g = new THREE.Group();
+  const top = mk(new THREE.CylinderGeometry(2.1, 2.3, 0.44, 8), m(topColor, { r: 0.85 })); top.position.y = 0.18; g.add(top);
+  const cone = mk(new THREE.ConeGeometry(2.1, 3.5, 8), m(coneColor, { r: 0.85 })); cone.position.y = -1.75; cone.rotation.y = Math.PI/8; g.add(cone);
+  const ring = mk(new THREE.CylinderGeometry(2.15, 2.1, 0.22, 8), m(ringColor, { r: 0.75 })); ring.position.y = -0.1; g.add(ring);
+  return g;
+}
+
+function buildSilvane(m, mk, trail) {
+  const g = islandBase(m, mk, 0x5a6b52, 0x3a3428, 0x5c564a);
+  function pine(x, z, h) {
+    const tg = new THREE.Group();
+    const trunk = mk(new THREE.CylinderGeometry(0.045,0.065,h*0.25,6), m(0x4a3a2c)); trunk.position.y = h*0.125; tg.add(trunk);
+    [0,1,2,3].forEach(i => { const t = mk(new THREE.ConeGeometry((0.4-i*0.07)*(h/1.4), h*0.4*(1-i*0.1), 7), m([0x2f4a3f,0x3f6352,0x517a63][i%3])); t.position.y = h*0.28+i*h*0.17; tg.add(t); });
+    tg.position.set(x, 0.42, z); g.add(tg);
+  }
+  pine(1.0,0.9,1.1); pine(1.2,0.5,0.8); pine(-1.0,-0.7,1.2); pine(-0.8,-1.0,0.9); pine(0.2,-1.2,1.0); pine(1.4,-0.7,0.85);
+  [[-0.5,0.7,0.18],[0.8,-0.3,0.15],[-1.0,0.3,0.12]].forEach(function(p){ var x=p[0],z=p[1],s=p[2]; var st=mk(new THREE.IcosahedronGeometry(s,0),m(0x5c564a)); st.position.set(x,0.43+s*0.3,z); st.scale.set(1.2,0.7,1); g.add(st); var ms=mk(new THREE.IcosahedronGeometry(s*0.55,0),m(0x5a6b48),false); ms.scale.set(1.1,0.3,0.9); ms.position.set(x,0.43+s*0.55,z); g.add(ms); });
+  [[-1.2,0.3,0.22],[0.9,1.0,0.18]].forEach(function(p){ var x=p[0],z=p[1],s=p[2]; var mn=mk(new THREE.IcosahedronGeometry(s,1),m(0x465440)); mn.scale.set(1,0.35,1); mn.position.set(x,0.43+s*0.15,z); g.add(mn); });
+  trail(g, -2.5, 0xa0b0e0); return g;
+}
+
+function buildOcean(m, mk, trail) {
+  const g = islandBase(m, mk, 0xc9a870, 0x0a2638, 0x0f3a52);
+  function coral(x, z, color, h) {
+    const cg = new THREE.Group();
+    const base = mk(new THREE.CylinderGeometry(0.03,0.045,h*0.3,6), m(color)); base.position.y = h*0.15; cg.add(base);
+    for (let i=0;i<4;i++){ const a=(i/4)*Math.PI*2; const br=mk(new THREE.CylinderGeometry(0.015,0.025,h*0.5,5),m(color),false); br.position.set(Math.cos(a)*0.04,h*0.32,Math.sin(a)*0.04); br.rotation.set(Math.sin(a)*0.5,0,Math.cos(a)*0.5); cg.add(br); }
+    cg.position.set(x, 0.42, z); g.add(cg);
+  }
+  coral(0.7,0.4,0xe8708a,0.35); coral(-0.5,0.7,0xe89a5c,0.28); coral(0.9,-0.5,0x9a6fc9,0.32); coral(-0.8,-0.7,0xe8c85c,0.24);
+  [[1.4,-0.7],[-1.3,0.3]].forEach(function(p){ const blade=mk(new THREE.BoxGeometry(0.06,0.7,0.01),m(0x2f8a6a,{r:0.55}),false); blade.position.set(p[0],0.8,p[1]); g.add(blade); });
+  [[1.0,0.7,0.15],[-1.1,-0.6,0.13],[0.5,-1.0,0.11]].forEach(function(p){ const st=mk(new THREE.IcosahedronGeometry(p[2],1),m(0x6f7268)); st.scale.set(1,0.5,1); st.position.set(p[0],0.43+p[2]*0.25,p[1]); g.add(st); });
+  trail(g, -2.0, 0x4fd8c8); return g;
+}
+
+function buildBarnyard(m, mk, trail) {
+  const g = islandBase(m, mk, 0x8aaa60, 0x6b5a44, 0x9a8870);
+  const barnBody = mk(new THREE.BoxGeometry(0.7,0.55,0.5), m(0xb8402f)); barnBody.position.set(-0.3,0.7,0.1); g.add(barnBody);
+  const barnRoof = mk(new THREE.CylinderGeometry(0,0.52,0.4,4), m(0x8a2a18)); barnRoof.position.set(-0.3,1.07,0.1); barnRoof.rotation.y=Math.PI/4; g.add(barnRoof);
+  for (let i=0;i<5;i++){ const post=mk(new THREE.BoxGeometry(0.045,0.22,0.045),m(0xd4b888),false); post.position.set(0.4+i*0.22,0.52,0.7-i*0.05); g.add(post); }
+  [[0.8,0.55,0.3],[1.0,0.55,-0.2]].forEach(function(p){ const bale=mk(new THREE.CylinderGeometry(0.12,0.12,0.18,8),m(0xe8c870)); bale.rotation.z=Math.PI/2; bale.position.set(p[0],p[1],p[2]); g.add(bale); });
+  [[1.1,-0.8],[-1.2,0.4]].forEach(function(p){ const trk=mk(new THREE.CylinderGeometry(0.055,0.07,0.7,6),m(0x5a3820)); trk.position.set(p[0],0.77,p[1]); g.add(trk); const crn=mk(new THREE.IcosahedronGeometry(0.35,1),m(0x6a9050)); crn.position.set(p[0],1.22,p[1]); g.add(crn); });
+  trail(g, -2.0, 0xd4c080); return g;
+}
+
+function buildBirdParadise(m, mk, trail) {
+  const g = islandBase(m, mk, 0x4a8a3c, 0x5c3a1e, 0x7a6050);
+  function palm(x, z, h) {
+    const trk=mk(new THREE.CylinderGeometry(0.04,0.055,h,6),m(0x8a6840)); trk.position.set(x,0.42+h/2,z); g.add(trk);
+    for (let i=0;i<5;i++){ const a=(i/5)*Math.PI*2; const fr=mk(new THREE.BoxGeometry(0.55,0.06,0.08),m(0x3a8830),false); fr.position.set(x+Math.cos(a)*0.25,0.42+h+0.05,z+Math.sin(a)*0.25); fr.rotation.y=a; fr.rotation.z=0.35; g.add(fr); }
+    const crn=mk(new THREE.SphereGeometry(0.18,6,4,0,Math.PI*2,0,Math.PI*0.6),m(0x2a7828)); crn.position.set(x,0.42+h+0.05,z); g.add(crn);
+  }
+  palm(0.5,0.7,0.9); palm(-0.6,-0.5,1.1); palm(1.1,-0.3,0.8);
+  const fc=[0xff6680,0xff9940,0xffe040,0xcc44ff];
+  [[0.8,0.2],[-0.9,0.6],[0.2,-0.9],[-0.5,-0.8],[1.2,0.7]].forEach(function(p,i){ const f=mk(new THREE.IcosahedronGeometry(0.08,0),m(fc[i%4]),false); f.position.set(p[0],0.5,p[1]); g.add(f); });
+  [[0.3,1.4,0.1],[-0.2,1.5,-0.4]].forEach(function(p){ const bird=mk(new THREE.IcosahedronGeometry(0.06,0),m(0xc1552f),false); bird.position.set(p[0],p[1],p[2]); g.add(bird); [-1,1].forEach(function(s){ const wing=mk(new THREE.BoxGeometry(0.15,0.02,0.06),m(0xe07050),false); wing.position.set(p[0]+s*0.1,p[1],p[2]); wing.rotation.z=s*0.4; g.add(wing); }); });
+  trail(g, -2.1, 0xffd080); return g;
+}
+
+function buildDesert(m, mk, trail) {
+  const g = islandBase(m, mk, 0xc8a060, 0x8a5c2c, 0xb08848);
+  function cactus(x, z, h) {
+    const body=mk(new THREE.CylinderGeometry(0.1,0.12,h,7),m(0x4a8040)); body.position.set(x,0.42+h/2,z); g.add(body);
+    [-1,1].forEach(function(s){ const arm=mk(new THREE.CylinderGeometry(0.055,0.065,h*0.45,6),m(0x4a8040),false); arm.position.set(x+s*0.16,0.42+h*0.55,z); arm.rotation.z=s*0.9; g.add(arm); const tip=mk(new THREE.CylinderGeometry(0.055,0.055,h*0.2,6),m(0x4a8040),false); tip.position.set(x+s*0.28,0.42+h*0.72,z); g.add(tip); });
+    const top2=mk(new THREE.SphereGeometry(0.1,6,5,0,Math.PI*2,0,Math.PI*0.55),m(0x3a6830)); top2.position.set(x,0.42+h,z); g.add(top2);
+  }
+  cactus(0.4,0.6,0.85); cactus(-0.7,-0.3,0.65); cactus(1.0,-0.6,0.55);
+  [[-1.1,0.4,0.2],[0.9,0.8,0.18],[-0.4,-1.0,0.15]].forEach(function(p){ const dn=mk(new THREE.IcosahedronGeometry(p[2],1),m(0xe8c880)); dn.scale.set(1.6,0.4,1.2); dn.position.set(p[0],0.42+p[2]*0.2,p[1]); g.add(dn); });
+  [[0.6,-0.9,0.14],[-1.0,-0.8,0.1]].forEach(function(p){ const r=mk(new THREE.IcosahedronGeometry(p[2],0),m(0xa87848)); r.position.set(p[0],0.43,p[1]); r.scale.set(1,0.7,1); g.add(r); });
+  trail(g, -2.0, 0xf0c850); return g;
+}
+
+function buildLakeKoi(m, mk, trail) {
+  const g = islandBase(m, mk, 0x6a9060, 0x4a3828, 0x7a6a50);
+  const pond=mk(new THREE.CylinderGeometry(0.75,0.75,0.05,14),new THREE.MeshStandardMaterial({color:0x4a8898,roughness:0.1,metalness:0.3,flatShading:true}),false); pond.position.set(-0.1,0.44,0.1); g.add(pond);
+  [[0.1,0.44,0.15],[-0.2,0.44,-0.1],[0.25,0.44,-0.2]].forEach(function(p,i){ const fish=mk(new THREE.IcosahedronGeometry(0.065,1),m([0xff6640,0xffffff,0xffaa20][i]),false); fish.scale.set(1.6,0.55,0.65); fish.position.set(p[0],p[1]+0.03,p[2]); g.add(fish); });
+  [[0.4,0.46,-0.3],[-0.4,0.46,0.4]].forEach(function(p){ const pad=mk(new THREE.CylinderGeometry(0.12,0.12,0.02,10),m(0x3a7a30),false); pad.position.set(p[0],p[1],p[2]); g.add(pad); const fl=mk(new THREE.IcosahedronGeometry(0.05,0),m(0xffb8c8),false); fl.position.set(p[0],p[1]+0.04,p[2]); g.add(fl); });
+  [[1.1,-0.7],[-1.0,0.5]].forEach(function(p){ const trk=mk(new THREE.CylinderGeometry(0.05,0.065,0.75,6),m(0x5a3828)); trk.position.set(p[0],0.79,p[1]); g.add(trk); const crn=mk(new THREE.IcosahedronGeometry(0.32,1),m(0x4a8050)); crn.position.set(p[0],1.19,p[1]); g.add(crn); });
+  [[0.5,0.7,0.12],[-0.6,-0.5,0.1],[0.6,-0.4,0.09]].forEach(function(p){ const r=mk(new THREE.IcosahedronGeometry(p[2],0),m(0x8a7a68)); r.scale.set(1.2,0.7,1); r.position.set(p[0],0.44,p[1]); g.add(r); });
+  trail(g, -2.0, 0x80d0c0); return g;
+}
+
+function buildPolarCaps(m, mk, trail) {
+  const g = islandBase(m, mk, 0xe8f4ff, 0x7a9ab8, 0xa8c0d8);
+  function shard(x, z, h) {
+    const s=mk(new THREE.ConeGeometry(0.14,h,5),m(0xd0eeff,{r:0.3,m:0.1})); s.position.set(x,0.42+h/2,z); s.rotation.y=Math.random()*Math.PI; g.add(s);
+    const s2=mk(new THREE.ConeGeometry(0.09,h*0.65,4),m(0xc0e8ff,{r:0.25,m:0.12}),false); s2.position.set(x+0.12,0.42+h*0.32,z+0.08); s2.rotation.y=1.2; g.add(s2);
+  }
+  shard(-0.5,0.5,0.7); shard(0.8,0.2,0.55); shard(-0.3,-0.8,0.65); shard(0.5,-0.6,0.48); shard(1.1,0.7,0.4);
+  [[-1.0,0.3,0.2],[0.9,0.8,0.18],[-0.6,-0.5,0.16],[1.3,-0.2,0.14]].forEach(function(p){ const mn=mk(new THREE.IcosahedronGeometry(p[2],1),m(0xf0f8ff,{r:0.8})); mn.scale.set(1.3,0.5,1.1); mn.position.set(p[0],0.42+p[2]*0.25,p[1]); g.add(mn); });
+  const pb=mk(new THREE.IcosahedronGeometry(0.11,1),m(0x181820)); pb.scale.set(0.7,1,0.65); pb.position.set(0.15,0.58,0.25); g.add(pb);
+  const pby=mk(new THREE.IcosahedronGeometry(0.075,0),m(0xf8f8f5),false); pby.scale.set(0.5,0.7,0.4); pby.position.set(0.24,0.58,0.25); g.add(pby);
+  const phd=mk(new THREE.IcosahedronGeometry(0.065,1),m(0x181820),false); phd.position.set(0.2,0.74,0.25); g.add(phd);
+  trail(g, -2.0, 0xb0d8f8); return g;
+}
+
+function buildRainforest(m, mk, trail) {
+  const g = islandBase(m, mk, 0x3a7040, 0x1e3020, 0x3a5038);
+  function rainTree(x, z, h, cr, colors) {
+    const trk=mk(new THREE.CylinderGeometry(0.065,0.09,h,6),m(0x3a2818)); trk.position.set(x,0.42+h/2,z); g.add(trk);
+    colors.forEach(function(c,i){ const r=cr*(1-i*0.15); const crn=mk(new THREE.IcosahedronGeometry(r,1),m(c)); crn.scale.set(1,0.65,1); crn.position.set(x,0.42+h+i*0.15,z); g.add(crn); });
+  }
+  rainTree(0.3,0.5,1.1,0.55,[0x2d7040,0x3a8848,0x4aaa58]); rainTree(-0.7,-0.4,1.3,0.5,[0x286038,0x358050,0x48a060]);
+  rainTree(1.0,-0.6,0.9,0.42,[0x307040,0x409050,0x50b060]); rainTree(-1.1,0.5,0.8,0.38,[0x2a6838,0x387848,0x489855]);
+  [[0.5,-1.0],[-1.2,-0.3],[0.9,0.7],[-0.4,0.9]].forEach(function(p){ for(let i=0;i<4;i++){ const a=(i/4)*Math.PI*2; const fr=mk(new THREE.BoxGeometry(0.28,0.04,0.06),m(0x4aaa50),false); fr.position.set(p[0]+Math.cos(a)*0.12,0.47,p[1]+Math.sin(a)*0.12); fr.rotation.y=a; g.add(fr); } });
+  [[0.05,0.6,0.6],[0.0,0.5,0.5],[-0.05,0.55,0.7]].forEach(function(p){ const fall=mk(new THREE.BoxGeometry(0.04,p[1],0.04),m(0x6ab8d0,{r:0.1,m:0.2,t:true,o:0.7}),false); fall.position.set(-1.5+p[0],0.42+p[1]/2-0.05,-0.5+p[2]*0.1); g.add(fall); });
+  const pool=mk(new THREE.CylinderGeometry(0.25,0.25,0.04,10),new THREE.MeshStandardMaterial({color:0x5aA8c0,roughness:0.1,metalness:0.35,flatShading:true}),false); pool.position.set(-1.5,0.44,-0.5); g.add(pool);
+  trail(g, -2.1, 0x80e090); return g;
+}
+
+const BUILD_FNS = { buildSilvane, buildOcean, buildBarnyard, buildBirdParadise, buildDesert, buildLakeKoi, buildPolarCaps, buildRainforest };
+
+// ═══════════════════════════════════════════════════════
+// BUILD CONSTELLATION GRAPHICS + CENTRAL ANCHOR + ISLANDS
+// ═══════════════════════════════════════════════════════
+
+// 1. Constellation SVG Background in #world
+const svgNS = "http://www.w3.org/2000/svg";
+const svg = document.createElementNS(svgNS, "svg");
+svg.id = "constellation-svg";
+svg.setAttribute("viewBox", "0 0 1300 1300");
+
+const cx = 650, cy = 650;
+
+// Gradients & Defs
+const defs = document.createElementNS(svgNS, "defs");
+defs.innerHTML = `
+  <radialGradient id="ringGlow" cx="50%" cy="50%" r="50%">
+    <stop offset="0%" stop-color="#c8944a" stop-opacity="0.25"/>
+    <stop offset="60%" stop-color="#c8944a" stop-opacity="0.08"/>
+    <stop offset="100%" stop-color="#c8944a" stop-opacity="0"/>
+  </radialGradient>
+  <linearGradient id="spokeGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#c8944a" stop-opacity="0.6"/>
+    <stop offset="100%" stop-color="#c8944a" stop-opacity="0.15"/>
+  </linearGradient>
+`;
+svg.appendChild(defs);
+
+// Orbital Concentric Rings
+[150, 305, RING_RADIUS].forEach((r, idx) => {
+  const circle = document.createElementNS(svgNS, "circle");
+  circle.setAttribute("cx", cx);
+  circle.setAttribute("cy", cy);
+  circle.setAttribute("r", r);
+  circle.setAttribute("fill", "none");
+  circle.setAttribute("stroke", idx === 2 ? "rgba(200, 148, 74, 0.4)" : "rgba(200, 148, 74, 0.22)");
+  circle.setAttribute("stroke-width", idx === 2 ? "1.5" : "1");
+  circle.setAttribute("stroke-dasharray", idx === 2 ? "6 8" : (idx === 1 ? "4 6" : "3 5"));
+  svg.appendChild(circle);
+});
+
+// Connecting Octagon Constellation Path
+const octPoints = ISLANDS.map(isl => `${cx + isl.wx},${cy + isl.wy}`).join(" ");
+const octPolygon = document.createElementNS(svgNS, "polygon");
+octPolygon.setAttribute("points", octPoints);
+octPolygon.setAttribute("fill", "rgba(200, 148, 74, 0.035)");
+octPolygon.setAttribute("stroke", "rgba(200, 148, 74, 0.35)");
+octPolygon.setAttribute("stroke-width", "1.2");
+octPolygon.setAttribute("stroke-dasharray", "8 6");
+svg.appendChild(octPolygon);
+
+// Radiant Spokes from Center to each Island
+ISLANDS.forEach(isl => {
+  const line = document.createElementNS(svgNS, "line");
+  line.setAttribute("x1", cx);
+  line.setAttribute("y1", cy);
+  line.setAttribute("x2", cx + isl.wx);
+  line.setAttribute("y2", cy + isl.wy);
+  line.setAttribute("stroke", "rgba(200, 148, 74, 0.28)");
+  line.setAttribute("stroke-width", "1");
+  line.setAttribute("stroke-dasharray", "4 4");
+  svg.appendChild(line);
+
+  // Island Node Anchor Glow on SVG
+  const nodeDot = document.createElementNS(svgNS, "circle");
+  nodeDot.setAttribute("cx", cx + isl.wx);
+  nodeDot.setAttribute("cy", cy + isl.wy);
+  nodeDot.setAttribute("r", "110");
+  nodeDot.setAttribute("fill", "none");
+  nodeDot.setAttribute("stroke", "rgba(200, 148, 74, 0.18)");
+  nodeDot.setAttribute("stroke-width", "1");
+  svg.appendChild(nodeDot);
+});
+
+world.appendChild(svg);
+
+// 2. Central Anchor Circle
+const centralAnchor = document.createElement('div');
+centralAnchor.className = 'central-anchor';
+centralAnchor.innerHTML = `
+  <div class="anchor-ring"></div>
+  <div class="anchor-ring-inner"></div>
+  <svg class="anchor-emblem" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="12" cy="12" r="10"/>
+    <polygon points="12 2 15 9 22 12 15 15 12 22 9 15 2 12 9 9"/>
+    <circle cx="12" cy="12" r="2.5" fill="currentColor"/>
+  </svg>
+  <div class="anchor-title">The Isle</div>
+  <div class="anchor-sub">Realm Core</div>
+`;
+centralAnchor.addEventListener('mouseenter', () => showHint("the Central Realm Anchor (Click to Recenter)"));
+centralAnchor.addEventListener('mouseleave', () => hideHint());
+centralAnchor.addEventListener('click', (e) => {
+  e.stopPropagation();
+  panX = 0; panY = 0; worldScale = 1.0;
+  applyTransform();
+  showHint("View Centered");
+  setTimeout(hideHint, 1200);
+});
+world.appendChild(centralAnchor);
+
+// 3. Build Island DOM Nodes + Mini 3D Scenes
+let readyCount = 0;
+ISLANDS.forEach(island => {
+  const node = document.createElement('div');
+  node.className = 'island-node';
+  node.dataset.file = island.file;
+  node.dataset.name = island.name;
+  node.style.left = 'calc(50% + ' + island.wx + 'px)';
+  node.style.top  = 'calc(50% + ' + island.wy + 'px)';
+
+  const wrap = document.createElement('div');
+  wrap.className = 'island-canvas-wrap';
+  wrap.style.width = island.size + 'px';
+  wrap.style.height = island.size + 'px';
+
+  const canvas = document.createElement('canvas');
+  canvas.width = island.size; canvas.height = island.size;
+  wrap.appendChild(canvas); node.appendChild(wrap);
+
+  const label = document.createElement('div');
+  label.className = 'island-label';
+  label.innerHTML = '<h3>' + island.name + '</h3><p>' + island.tagline + '</p>';
+  node.appendChild(label);
+
+  node.addEventListener('mouseenter', () => showHint(island.name));
+  node.addEventListener('mouseleave', () => hideHint());
+  world.appendChild(node);
+
+  setTimeout(() => {
+    makeMini(canvas, island.bg, BUILD_FNS[island.buildFn]);
+    readyCount++;
+    if (readyCount === ISLANDS.length) revealHub();
+  }, 80 + ISLANDS.indexOf(island) * 40);
+});
+
+function revealHub() {
+  const veil = document.getElementById('veil');
+  veil.classList.add('hidden');
+  setTimeout(() => { veil.style.display = 'none'; }, 1000);
+}
+
+// ═══════════════════════════════════════════════════════
+// MAIN LOOP
+// ═══════════════════════════════════════════════════════
+function mainLoop(ts) {
+  requestAnimationFrame(mainLoop);
+  const t = ts * 0.001;
+
+  // Gentle float on each island node in the ring
+  document.querySelectorAll('.island-node').forEach((node, i) => {
+    const bobY = Math.sin(t * 0.6 + i * (Math.PI / 4)) * 7;
+    node.style.transform = 'translate(-50%, calc(-50% + ' + bobY + 'px))';
+  });
+
+  // Gentle rhythmic pulse on center anchor
+  if (centralAnchor) {
+    const anchorBob = Math.sin(t * 0.8) * 4;
+    centralAnchor.style.transform = 'translate(-50%, calc(-50% + ' + anchorBob + 'px))';
+  }
+
+  applyInertia();
+  drawBg(panX, panY);
+}
+requestAnimationFrame(mainLoop);
+</script>
+</body>
+</html>
